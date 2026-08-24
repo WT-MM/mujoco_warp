@@ -96,6 +96,53 @@ class PassiveTest(parameterized.TestCase):
     _assert_eq(d.qfrc_passive.numpy()[0], mjd.qfrc_passive, "qfrc_passive")
     _assert_eq(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, "qfrc_fluid")
 
+  def test_batched_geom_fluid(self):
+    """Tests per-world fluid coefficients, including box/ellipsoid routing."""
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <option density="1.3" viscosity="0.07" wind="0.1 0.2 -0.05"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="ellipsoid" size="0.1 0.3 0.005" fluidshape="ellipsoid"/>
+          </body>
+          <body pos="1 0 0">
+            <freejoint/>
+            <geom type="box" size="0.1 0.1 0.1"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="0.7 -0.3 0.4 -0.6 0.8 -0.2 0.2 0.5 -0.7 0.3 -0.9 0.6"/>
+        </keyframe>
+      </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+    qfrc_fluid_world0 = mjd.qfrc_fluid.copy()
+
+    m = mjw.put_model(mjm, batch_sizes={"geom_fluid": 2})
+    d = mjw.put_data(mjm, mjd, nworld=2)
+
+    # world 1 swaps routing: the ellipsoid geom falls back to the inertia box model,
+    # while the box geom switches to the ellipsoid model
+    geom_fluid = m.geom_fluid.numpy()
+    geom_fluid[1, 0] = 0.0
+    geom_fluid[1, 1] = mjm.geom_fluid[0]
+    m.geom_fluid.assign(geom_fluid)
+
+    mjw.passive(m, d)
+
+    mjm.geom_fluid[:] = geom_fluid[1]
+    mujoco.mj_forward(mjm, mjd)
+    qfrc_fluid_world1 = mjd.qfrc_fluid.copy()
+
+    # both bodies switch model, so both dof slices must change
+    self.assertFalse(np.allclose(qfrc_fluid_world0[:6], qfrc_fluid_world1[:6]))
+    self.assertFalse(np.allclose(qfrc_fluid_world0[6:], qfrc_fluid_world1[6:]))
+    _assert_eq(d.qfrc_fluid.numpy()[0], qfrc_fluid_world0, "qfrc_fluid (world 0)")
+    _assert_eq(d.qfrc_fluid.numpy()[1], qfrc_fluid_world1, "qfrc_fluid (world 1)")
+
   @parameterized.parameters(
     "Euler",
     "implicitfast",

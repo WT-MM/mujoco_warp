@@ -957,12 +957,11 @@ class IOTest(parameterized.TestCase):
 
     m = mjwarp.put_model(mjm)
 
-    np.testing.assert_allclose(m.geom_fluid.numpy(), mjm.geom_fluid)
+    self.assertEqual(tuple(m.geom_fluid.shape), (1, mjm.ngeom, mujoco.mjNFLUID))
+    np.testing.assert_allclose(m.geom_fluid.numpy()[0], mjm.geom_fluid)
     self.assertTrue(m.has_fluid)
 
-    body_has = m.body_fluid_ellipsoid.numpy()
-    self.assertTrue(body_has[mjm.geom_bodyid[0]])
-    self.assertFalse(body_has[0])
+    np.testing.assert_array_equal(m.body_fluid_adr.numpy(), [mjm.geom_bodyid[0]])
 
   def test_jacobian_auto(self):
     mjm = mujoco.MjModel.from_xml_string("""
