@@ -2342,6 +2342,231 @@ def get_data_into(
     result.map_iefc2efc[:nefc] = d.map_iefc2efc.numpy()[world_id, :nefc]
 
 
+@wp.kernel(enable_backward=False, grid_stride=False)
+def _reset_xfrc_applied(reset_in: wp.array[bool], xfrc_applied_out: wp.array2d[wp.spatial_vector]):
+  worldid, bodyid, elemid = wp.tid()
+
+  if not reset_in[worldid]:
+    return
+
+  xfrc_applied_out[worldid, bodyid][elemid] = 0.0
+
+
+@wp.kernel(enable_backward=False, grid_stride=False)
+def _reset_M(reset_in: wp.array[bool], M_out: wp.array2d[float]):
+  worldid, elemid = wp.tid()
+
+  if not reset_in[worldid]:
+    return
+
+  M_out[worldid, elemid] = 0.0
+
+
+@wp.kernel(enable_backward=False, grid_stride=False)
+def _reset_nworld(
+  # Model:
+  nq: int,
+  nv: int,
+  nu: int,
+  na: int,
+  nbody: int,
+  ntree: int,
+  neq: int,
+  nuserdata: int,
+  nsensordata: int,
+  qpos0: wp.array2d[float],
+  eq_active0: wp.array[bool],
+  # In:
+  reset_in: wp.array[bool],
+  # Data out:
+  solver_niter_out: wp.array[int],
+  ne_out: wp.array[int],
+  nf_out: wp.array[int],
+  nl_out: wp.array[int],
+  nefc_out: wp.array[int],
+  ntree_awake_out: wp.array[int],
+  nbody_awake_out: wp.array[int],
+  nv_awake_out: wp.array[int],
+  time_out: wp.array[float],
+  energy_out: wp.array[wp.vec2],
+  qpos_out: wp.array2d[float],
+  qvel_out: wp.array2d[float],
+  act_out: wp.array2d[float],
+  qacc_warmstart_out: wp.array2d[float],
+  ctrl_out: wp.array2d[float],
+  qfrc_applied_out: wp.array2d[float],
+  eq_active_out: wp.array2d[bool],
+  qacc_out: wp.array2d[float],
+  act_dot_out: wp.array2d[float],
+  userdata_out: wp.array2d[float],
+  sensordata_out: wp.array2d[float],
+  nacon_out: wp.array[int],
+  overflow_out: wp.array[int],
+):
+  worldid = wp.tid()
+
+  if not reset_in[worldid]:
+    return
+
+  solver_niter_out[worldid] = 0
+  if worldid == 0:
+    nacon_out[0] = 0
+  ne_out[worldid] = 0
+  nf_out[worldid] = 0
+  nl_out[worldid] = 0
+  nefc_out[worldid] = 0
+  time_out[worldid] = 0.0
+  energy_out[worldid] = wp.vec2(0.0, 0.0)
+  ntree_awake_out[worldid] = ntree
+  nbody_awake_out[worldid] = nbody
+  nv_awake_out[worldid] = nv
+  qpos0_id = worldid % qpos0.shape[0]
+  for i in range(nq):
+    qpos_out[worldid, i] = qpos0[qpos0_id, i]
+    if i < nv:
+      qvel_out[worldid, i] = 0.0
+      qacc_warmstart_out[worldid, i] = 0.0
+      qfrc_applied_out[worldid, i] = 0.0
+      qacc_out[worldid, i] = 0.0
+  for i in range(nu):
+    ctrl_out[worldid, i] = 0.0
+    if i < na:
+      act_out[worldid, i] = 0.0
+      act_dot_out[worldid, i] = 0.0
+  for i in range(neq):
+    eq_active_out[worldid, i] = eq_active0[i]
+  for i in range(nsensordata):
+    sensordata_out[worldid, i] = 0.0
+  for i in range(nuserdata):
+    userdata_out[worldid, i] = 0.0
+  overflow_out[worldid] = 0
+
+
+@wp.kernel(enable_backward=False, grid_stride=False)
+def _reset_mocap(
+  # Model:
+  body_mocapid: wp.array[int],
+  body_pos: wp.array2d[wp.vec3],
+  body_quat: wp.array2d[wp.quat],
+  # In:
+  reset_in: wp.array[bool],
+  # Data out:
+  mocap_pos_out: wp.array2d[wp.vec3],
+  mocap_quat_out: wp.array2d[wp.quat],
+):
+  worldid, bodyid = wp.tid()
+
+  if not reset_in[worldid]:
+    return
+
+  mocapid = body_mocapid[bodyid]
+
+  if mocapid >= 0:
+    mocap_pos_out[worldid, mocapid] = body_pos[worldid % body_pos.shape[0], bodyid]
+    mocap_quat_out[worldid, mocapid] = body_quat[worldid % body_quat.shape[0], bodyid]
+
+
+@wp.kernel(enable_backward=False, grid_stride=False)
+def _reset_contact(
+  # Data in:
+  nacon_in: wp.array[int],
+  # In:
+  reset_in: wp.array[bool],
+  nefcaddress: int,
+  # Data out:
+  contact_dist_out: wp.array[float],
+  contact_pos_out: wp.array[wp.vec3],
+  contact_frame_out: wp.array[wp.mat33],
+  contact_includemargin_out: wp.array[float],
+  contact_friction_out: wp.array[types.vec5],
+  contact_solref_out: wp.array[wp.vec2],
+  contact_solreffriction_out: wp.array[wp.vec2],
+  contact_solimp_out: wp.array[types.vec5],
+  contact_dim_out: wp.array[int],
+  contact_geom_out: wp.array[wp.vec2i],
+  contact_flex_out: wp.array[wp.vec2i],
+  contact_elem_out: wp.array[wp.vec2i],
+  contact_vert_out: wp.array[wp.vec2i],
+  contact_efc_address_out: wp.array2d[int],
+  contact_worldid_out: wp.array[int],
+  contact_type_out: wp.array[int],
+  contact_geomcollisionid_out: wp.array[int],
+  contact_adhesion_out: wp.array[float],
+):
+  conid = wp.tid()
+
+  if conid >= nacon_in[0]:
+    return
+
+  worldid = contact_worldid_out[conid]
+  if worldid >= 0 and not reset_in[worldid]:
+    return
+
+  contact_dist_out[conid] = 0.0
+  contact_pos_out[conid] = wp.vec3(0.0)
+  contact_frame_out[conid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+  contact_includemargin_out[conid] = 0.0
+  contact_friction_out[conid] = types.vec5(0.0, 0.0, 0.0, 0.0, 0.0)
+  contact_solref_out[conid] = wp.vec2(0.0, 0.0)
+  contact_solreffriction_out[conid] = wp.vec2(0.0, 0.0)
+  contact_solimp_out[conid] = types.vec5(0.0, 0.0, 0.0, 0.0, 0.0)
+  contact_dim_out[conid] = 0
+  contact_geom_out[conid] = wp.vec2i(0, 0)
+  if contact_flex_out.shape[0] > 0:
+    contact_flex_out[conid] = wp.vec2i(0, 0)
+  if contact_elem_out.shape[0] > 0:
+    contact_elem_out[conid] = wp.vec2i(0, 0)
+  if contact_vert_out.shape[0] > 0:
+    contact_vert_out[conid] = wp.vec2i(0, 0)
+  for i in range(nefcaddress):
+    contact_efc_address_out[conid, i] = -1
+  contact_worldid_out[conid] = 0
+  contact_type_out[conid] = 0
+  contact_geomcollisionid_out[conid] = 0
+  contact_adhesion_out[conid] = 0.0
+
+
+@wp.kernel(enable_backward=False, grid_stride=False)
+def _reset_sleep(
+  # Model:
+  nv: int,
+  nbody: int,
+  ntree: int,
+  body_mocapid: wp.array[int],
+  body_treeid: wp.array[int],
+  # In:
+  mj_minawake: int,
+  reset_in: wp.array[bool],
+  # Data out:
+  tree_asleep_out: wp.array2d[int],
+  tree_awake_out: wp.array2d[int],
+  body_awake_out: wp.array2d[int],
+  body_awake_ind_out: wp.array2d[int],
+  dof_awake_ind_out: wp.array2d[int],
+):
+  worldid, elemid = wp.tid()
+
+  if not reset_in[worldid]:
+    return
+
+  if elemid < ntree:
+    tree_asleep_out[worldid, elemid] = -(1 + mj_minawake)
+    tree_awake_out[worldid, elemid] = 1
+
+  if elemid < nbody:
+    if body_treeid[elemid] < 0:
+      if body_mocapid[elemid] >= 0:
+        body_awake_out[worldid, elemid] = int(types.SleepState.AWAKE)
+      else:
+        body_awake_out[worldid, elemid] = int(types.SleepState.STATIC)
+    else:
+      body_awake_out[worldid, elemid] = int(types.SleepState.AWAKE)
+    body_awake_ind_out[worldid, elemid] = elemid
+
+  if elemid < nv:
+    dof_awake_ind_out[worldid, elemid] = elemid
+
+
 def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   """Clear data, set defaults; optionally by world.
 
@@ -2355,234 +2580,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       dtype is not bool or integer.
   """
   sleep_enabled = bool(m.opt.enableflags & types.EnableBit.SLEEP)
-
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
-  def reset_xfrc_applied(reset_in: wp.array[bool], xfrc_applied_out: wp.array2d[wp.spatial_vector]):
-    worldid, bodyid, elemid = wp.tid()
-
-    if wp.static(reset is not None):
-      if not reset_in[worldid]:
-        return
-
-    xfrc_applied_out[worldid, bodyid][elemid] = 0.0
-
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
-  def reset_M(reset_in: wp.array[bool], M_out: wp.array2d[float]):
-    worldid, elemid = wp.tid()
-
-    if wp.static(reset is not None):
-      if not reset_in[worldid]:
-        return
-
-    M_out[worldid, elemid] = 0.0
-
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
-  def reset_nworld(
-    # Model:
-    nq: int,
-    nv: int,
-    nu: int,
-    na: int,
-    nbody: int,
-    ntree: int,
-    neq: int,
-    nuserdata: int,
-    nsensordata: int,
-    qpos0: wp.array2d[float],
-    eq_active0: wp.array[bool],
-    # Data in:
-    nworld_in: int,
-    # In:
-    reset_in: wp.array[bool],
-    # Data out:
-    solver_niter_out: wp.array[int],
-    ne_out: wp.array[int],
-    nf_out: wp.array[int],
-    nl_out: wp.array[int],
-    nefc_out: wp.array[int],
-    ntree_awake_out: wp.array[int],
-    nbody_awake_out: wp.array[int],
-    nv_awake_out: wp.array[int],
-    time_out: wp.array[float],
-    energy_out: wp.array[wp.vec2],
-    qpos_out: wp.array2d[float],
-    qvel_out: wp.array2d[float],
-    act_out: wp.array2d[float],
-    qacc_warmstart_out: wp.array2d[float],
-    ctrl_out: wp.array2d[float],
-    qfrc_applied_out: wp.array2d[float],
-    eq_active_out: wp.array2d[bool],
-    qacc_out: wp.array2d[float],
-    act_dot_out: wp.array2d[float],
-    userdata_out: wp.array2d[float],
-    sensordata_out: wp.array2d[float],
-    nacon_out: wp.array[int],
-    overflow_out: wp.array[int],
-  ):
-    worldid = wp.tid()
-
-    if wp.static(reset is not None):
-      if not reset_in[worldid]:
-        return
-
-    solver_niter_out[worldid] = 0
-    if worldid == 0:
-      nacon_out[0] = 0
-    ne_out[worldid] = 0
-    nf_out[worldid] = 0
-    nl_out[worldid] = 0
-    nefc_out[worldid] = 0
-    time_out[worldid] = 0.0
-    energy_out[worldid] = wp.vec2(0.0, 0.0)
-    ntree_awake_out[worldid] = ntree
-    nbody_awake_out[worldid] = nbody
-    nv_awake_out[worldid] = nv
-    qpos0_id = worldid % qpos0.shape[0]
-    for i in range(nq):
-      qpos_out[worldid, i] = qpos0[qpos0_id, i]
-      if i < nv:
-        qvel_out[worldid, i] = 0.0
-        qacc_warmstart_out[worldid, i] = 0.0
-        qfrc_applied_out[worldid, i] = 0.0
-        qacc_out[worldid, i] = 0.0
-    for i in range(nu):
-      ctrl_out[worldid, i] = 0.0
-      if i < na:
-        act_out[worldid, i] = 0.0
-        act_dot_out[worldid, i] = 0.0
-    for i in range(neq):
-      eq_active_out[worldid, i] = eq_active0[i]
-    for i in range(nsensordata):
-      sensordata_out[worldid, i] = 0.0
-    for i in range(nuserdata):
-      userdata_out[worldid, i] = 0.0
-    overflow_out[worldid] = 0
-
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
-  def reset_mocap(
-    # Model:
-    body_mocapid: wp.array[int],
-    body_pos: wp.array2d[wp.vec3],
-    body_quat: wp.array2d[wp.quat],
-    # In:
-    reset_in: wp.array[bool],
-    # Data out:
-    mocap_pos_out: wp.array2d[wp.vec3],
-    mocap_quat_out: wp.array2d[wp.quat],
-  ):
-    worldid, bodyid = wp.tid()
-
-    if wp.static(reset is not None):
-      if not reset_in[worldid]:
-        return
-
-    mocapid = body_mocapid[bodyid]
-
-    if mocapid >= 0:
-      mocap_pos_out[worldid, mocapid] = body_pos[worldid % body_pos.shape[0], bodyid]
-      mocap_quat_out[worldid, mocapid] = body_quat[worldid % body_quat.shape[0], bodyid]
-
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
-  def reset_contact(
-    # Data in:
-    nacon_in: wp.array[int],
-    # In:
-    reset_in: wp.array[bool],
-    nefcaddress: int,
-    # Data out:
-    contact_dist_out: wp.array[float],
-    contact_pos_out: wp.array[wp.vec3],
-    contact_frame_out: wp.array[wp.mat33],
-    contact_includemargin_out: wp.array[float],
-    contact_friction_out: wp.array[types.vec5],
-    contact_solref_out: wp.array[wp.vec2],
-    contact_solreffriction_out: wp.array[wp.vec2],
-    contact_solimp_out: wp.array[types.vec5],
-    contact_dim_out: wp.array[int],
-    contact_geom_out: wp.array[wp.vec2i],
-    contact_flex_out: wp.array[wp.vec2i],
-    contact_elem_out: wp.array[wp.vec2i],
-    contact_vert_out: wp.array[wp.vec2i],
-    contact_efc_address_out: wp.array2d[int],
-    contact_worldid_out: wp.array[int],
-    contact_type_out: wp.array[int],
-    contact_geomcollisionid_out: wp.array[int],
-    contact_adhesion_out: wp.array[float],
-  ):
-    conid = wp.tid()
-
-    if conid >= nacon_in[0]:
-      return
-
-    worldid = contact_worldid_out[conid]
-    if wp.static(reset is not None):
-      if worldid >= 0:
-        if not reset_in[worldid]:
-          return
-
-    contact_dist_out[conid] = 0.0
-    contact_pos_out[conid] = wp.vec3(0.0)
-    contact_frame_out[conid] = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    contact_includemargin_out[conid] = 0.0
-    contact_friction_out[conid] = types.vec5(0.0, 0.0, 0.0, 0.0, 0.0)
-    contact_solref_out[conid] = wp.vec2(0.0, 0.0)
-    contact_solreffriction_out[conid] = wp.vec2(0.0, 0.0)
-    contact_solimp_out[conid] = types.vec5(0.0, 0.0, 0.0, 0.0, 0.0)
-    contact_dim_out[conid] = 0
-    contact_geom_out[conid] = wp.vec2i(0, 0)
-    if contact_flex_out.shape[0] > 0:
-      contact_flex_out[conid] = wp.vec2i(0, 0)
-    if contact_elem_out.shape[0] > 0:
-      contact_elem_out[conid] = wp.vec2i(0, 0)
-    if contact_vert_out.shape[0] > 0:
-      contact_vert_out[conid] = wp.vec2i(0, 0)
-    for i in range(nefcaddress):
-      contact_efc_address_out[conid, i] = -1
-    contact_worldid_out[conid] = 0
-    contact_type_out[conid] = 0
-    contact_geomcollisionid_out[conid] = 0
-    contact_adhesion_out[conid] = 0.0
-
-  @wp.kernel(module="unique", enable_backward=False, grid_stride=False)
-  def reset_sleep(
-    # Model:
-    nv: int,
-    nbody: int,
-    ntree: int,
-    body_mocapid: wp.array[int],
-    body_treeid: wp.array[int],
-    # In:
-    mj_minawake: int,
-    reset_in: wp.array[bool],
-    # Data out:
-    tree_asleep_out: wp.array2d[int],
-    tree_awake_out: wp.array2d[int],
-    body_awake_out: wp.array2d[int],
-    body_awake_ind_out: wp.array2d[int],
-    dof_awake_ind_out: wp.array2d[int],
-  ):
-    worldid, elemid = wp.tid()
-
-    if wp.static(reset is not None):
-      if not reset_in[worldid]:
-        return
-
-    if elemid < ntree:
-      tree_asleep_out[worldid, elemid] = -(1 + mj_minawake)
-      tree_awake_out[worldid, elemid] = 1
-
-    if elemid < nbody:
-      if body_treeid[elemid] < 0:
-        if body_mocapid[elemid] >= 0:
-          body_awake_out[worldid, elemid] = int(types.SleepState.AWAKE)
-        else:
-          body_awake_out[worldid, elemid] = int(types.SleepState.STATIC)
-      else:
-        body_awake_out[worldid, elemid] = int(types.SleepState.AWAKE)
-      body_awake_ind_out[worldid, elemid] = elemid
-
-    if elemid < nv:
-      dof_awake_ind_out[worldid, elemid] = elemid
 
   if reset is None:
     reset_input = wp.ones(d.nworld, dtype=bool)
@@ -2599,9 +2596,9 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   else:
     raise ValueError(f"reset must be None or a wp.array, got {type(reset)}.")
 
-  wp.launch(reset_xfrc_applied, dim=(d.nworld, m.nbody, 6), inputs=[reset_input], outputs=[d.xfrc_applied])
+  wp.launch(_reset_xfrc_applied, dim=(d.nworld, m.nbody, 6), inputs=[reset_input], outputs=[d.xfrc_applied])
   wp.launch(
-    reset_M,
+    _reset_M,
     dim=(d.nworld, d.M.shape[1]),
     inputs=[reset_input],
     outputs=[d.M],
@@ -2609,7 +2606,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
 
   # set mocap_pos/quat = body_pos/quat for mocap bodies
   wp.launch(
-    reset_mocap,
+    _reset_mocap,
     dim=(d.nworld, m.nbody),
     inputs=[m.body_mocapid, m.body_pos, m.body_quat, reset_input],
     outputs=[d.mocap_pos, d.mocap_quat],
@@ -2617,7 +2614,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
 
   # clear contacts
   wp.launch(
-    reset_contact,
+    _reset_contact,
     dim=d.naconmax,
     inputs=[d.nacon, reset_input, d.contact.efc_address.shape[1]],
     outputs=[
@@ -2643,7 +2640,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   )
 
   wp.launch(
-    reset_sleep,
+    _reset_sleep,
     dim=(d.nworld, max(m.ntree, m.nbody, m.nv)),
     inputs=[m.nv, m.nbody, m.ntree, m.body_mocapid, m.body_treeid, types.MJ_MINAWAKE, reset_input],
     outputs=[
@@ -2656,7 +2653,7 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   )
 
   wp.launch(
-    reset_nworld,
+    _reset_nworld,
     dim=d.nworld,
     inputs=[
       m.nq,
@@ -2670,7 +2667,6 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
       m.nsensordata,
       m.qpos0,
       m.eq_active0,
-      d.nworld,
       reset_input,
     ],
     outputs=[

@@ -1455,6 +1455,29 @@ class IOTest(parameterized.TestCase):
     _assert_eq(d.qvel.numpy()[0], 0.0, "qvel[0]")
     _assert_eq(d.qvel.numpy()[1], 2.0, "qvel[1]")
 
+  def test_reset_data_mask_reusable(self):
+    """Tests a reset mask can be reused across reset calls."""
+    _, _, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <worldbody>
+          <body>
+            <geom type="sphere" size="1"/>
+            <joint type="slide"/>
+          </body>
+        </worldbody>
+      </mujoco>
+      """,
+      nworld=2,
+    )
+    qvel = np.array([[1.0], [2.0]], dtype=np.float32)
+    reset = wp.array(np.array([True, False]), dtype=bool)
+
+    for _ in range(2):
+      d.qvel.assign(qvel)
+      mjwarp.reset_data(m, d, reset=reset)
+      np.testing.assert_allclose(d.qvel.numpy(), [[0.0], [2.0]])
+
   def test_reset_data_reset_invalid(self):
     """Tests that reset_data validates the reset argument."""
     _, _, m, d = test_data.fixture(
