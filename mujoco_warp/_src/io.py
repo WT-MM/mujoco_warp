@@ -476,14 +476,15 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   m.mocap_bodyid = np.arange(mjm.nbody)[mjm.body_mocapid >= 0]
   m.mocap_bodyid = m.mocap_bodyid[mjm.body_mocapid[mjm.body_mocapid >= 0].argsort()]
-  m.body_fluid_ellipsoid = np.zeros(mjm.nbody, dtype=bool)
-  m.body_fluid_ellipsoid[mjm.geom_bodyid[mjm.geom_fluid.reshape(mjm.ngeom, mujoco.mjNFLUID)[:, 0] > 0]] = True
-  m.body_fluid_ellipsoid_adr = np.nonzero(m.body_fluid_ellipsoid)[0]
-  body_fluid_box = np.zeros(mjm.nbody, dtype=bool)
-  for b in range(1, mjm.nbody):
-    if not m.body_fluid_ellipsoid[b] and mjm.body_mass[b] > 0.0:
-      body_fluid_box[b] = True
-  m.body_fluid_box_adr = np.nonzero(body_fluid_box)[0]
+  # bodies that may produce fluid force. Routing between the ellipsoid and inertia-box models
+  # is per-world (geom_fluid is batched and publicly mutable), so this covers both models for
+  # every body that has a geom or host mass, and the kernel's mass check filters it. It is not
+  # exhaustive with respect to batched body_mass: a body with no geom and no host mass that is
+  # given mass for one world is missed, as it also was by the host-filtered body_fluid_box_adr
+  # this replaces.
+  body_fluid = (mjm.body_geomnum > 0) | (mjm.body_mass > 0.0)
+  body_fluid[0] = False
+  m.body_fluid_adr = np.nonzero(body_fluid)[0]
   jnt_limited_slide_hinge = mjm.jnt_limited & np.isin(mjm.jnt_type, (mujoco.mjtJoint.mjJNT_SLIDE, mujoco.mjtJoint.mjJNT_HINGE))
   m.jnt_limited_slide_hinge_adr = np.nonzero(jnt_limited_slide_hinge)[0]
   m.jnt_limited_ball_adr = np.nonzero(mjm.jnt_limited & (mjm.jnt_type == mujoco.mjtJoint.mjJNT_BALL))[0]
@@ -1098,8 +1099,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     {
       "nbody_branches": len(m.body_branches),
       "nbranch_start": len(m.body_branch_start),
-      "nbody_fluid_ellipsoid": len(m.body_fluid_ellipsoid_adr),
-      "nbody_fluid_box": len(m.body_fluid_box_adr),
+      "nbody_fluid": len(m.body_fluid_adr),
       "njnt_limited_slide_hinge": len(m.jnt_limited_slide_hinge_adr),
       "njnt_limited_ball": len(m.jnt_limited_ball_adr),
       "ndof_tri": len(m.dof_tri_row),
