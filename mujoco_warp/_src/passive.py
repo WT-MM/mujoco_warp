@@ -316,8 +316,7 @@ def _fluid_force(
   body_inertia: wp.array2d[wp.vec3],
   geom_type: wp.array[int],
   geom_size: wp.array2d[wp.vec3],
-  geom_fluid: wp.array2d[float],
-  body_fluid_ellipsoid: wp.array[bool],
+  geom_fluid: wp.array3d[float],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
   ximat_in: wp.array2d[wp.mat33],
@@ -345,6 +344,7 @@ def _fluid_force(
   wind = opt_wind[worldid % opt_wind.shape[0]]
   density = opt_density[worldid % opt_density.shape[0]]
   viscosity = opt_viscosity[worldid % opt_viscosity.shape[0]]
+  geom_fluid_id = worldid % geom_fluid.shape[0]
 
   # Body kinematics
   xipos = xipos_in[worldid, bodyid]
@@ -356,16 +356,22 @@ def _fluid_force(
   subtree_root = subtree_com_in[worldid, body_rootid[bodyid]]
   lin_com = lin_global - wp.cross(xipos - subtree_root, ang_global)
 
-  if body_fluid_ellipsoid[bodyid]:
+  # geoms with positive fluid coefficient route the body to the ellipsoid model
+  ellipsoid = bool(False)
+  start = body_geomadr[bodyid]
+  count = body_geomnum[bodyid]
+  for i in range(count):
+    if geom_fluid[geom_fluid_id, start + i, 0] > 0.0:
+      ellipsoid = bool(True)
+      break
+
+  if ellipsoid:
     force_global = wp.vec3(0.0)
     torque_global = wp.vec3(0.0)
 
-    start = body_geomadr[bodyid]
-    count = body_geomnum[bodyid]
-
     for i in range(count):
       geomid = start + i
-      coef = geom_fluid[geomid, 0]
+      coef = geom_fluid[geom_fluid_id, geomid, 0]
       if coef <= 0.0:
         continue
 
@@ -388,8 +394,16 @@ def _fluid_force(
 
       if density > 0.0:
         # added-mass forces and torques
-        virtual_mass = wp.vec3(geom_fluid[geomid, 6], geom_fluid[geomid, 7], geom_fluid[geomid, 8])
-        virtual_inertia = wp.vec3(geom_fluid[geomid, 9], geom_fluid[geomid, 10], geom_fluid[geomid, 11])
+        virtual_mass = wp.vec3(
+          geom_fluid[geom_fluid_id, geomid, 6],
+          geom_fluid[geom_fluid_id, geomid, 7],
+          geom_fluid[geom_fluid_id, geomid, 8],
+        )
+        virtual_inertia = wp.vec3(
+          geom_fluid[geom_fluid_id, geomid, 9],
+          geom_fluid[geom_fluid_id, geomid, 10],
+          geom_fluid[geom_fluid_id, geomid, 11],
+        )
 
         virtual_lin_mom = wp.vec3(
           density * virtual_mass[0] * l_lin[0],
@@ -409,11 +423,11 @@ def _fluid_force(
         lfrc_torque += added_mass_torque
 
       # lift force orthogonal to velocity from Kutta-Joukowski theorem
-      magnus_coef = geom_fluid[geomid, 5]
-      kutta_coef = geom_fluid[geomid, 4]
-      blunt_drag_coef = geom_fluid[geomid, 1]
-      slender_drag_coef = geom_fluid[geomid, 2]
-      ang_drag_coef = geom_fluid[geomid, 3]
+      magnus_coef = geom_fluid[geom_fluid_id, geomid, 5]
+      kutta_coef = geom_fluid[geom_fluid_id, geomid, 4]
+      blunt_drag_coef = geom_fluid[geom_fluid_id, geomid, 1]
+      slender_drag_coef = geom_fluid[geom_fluid_id, geomid, 2]
+      ang_drag_coef = geom_fluid[geom_fluid_id, geomid, 3]
 
       volume = wp.static(4.0 / 3.0 * wp.pi) * semiaxes[0] * semiaxes[1] * semiaxes[2]
       d_max = wp.max(wp.max(semiaxes[0], semiaxes[1]), semiaxes[2])
@@ -545,7 +559,6 @@ def _fluid(m: Model, d: Data):
       m.geom_type,
       m.geom_size,
       m.geom_fluid,
-      m.body_fluid_ellipsoid,
       d.xipos,
       d.ximat,
       d.geom_xpos,

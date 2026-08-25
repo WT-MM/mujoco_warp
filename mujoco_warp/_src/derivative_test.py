@@ -38,6 +38,106 @@ def _assert_eq(a, b, name):
 
 
 class DerivativeTest(parameterized.TestCase):
+  @parameterized.parameters("implicit", "implicitfast")
+  def test_batched_geom_fluid(self, integrator):
+    """Tests per-world fluid coefficients, including box/ellipsoid routing."""
+    mjm = mujoco.MjModel.from_xml_string(f"""
+      <mujoco>
+        <option integrator="{integrator}" density="1000" viscosity="0.002" wind="0.1 0.2 -0.05"/>
+        <worldbody>
+          <body>
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="ellipsoid" size="0.3 0.45 0.6" pos="0.1 0.02 -0.04" mass="0.01"
+                  euler="10 20 30" fluidshape="ellipsoid" fluidcoef="1 1.5 2 0.5 0.8"/>
+          </body>
+          <body pos="2 0 0">
+            <joint type="hinge" axis="1 0 0"/>
+            <geom type="box" size="0.3 0.3 0.3" mass="0.01"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0.3 -0.2" qvel="7 -4"/>
+        </keyframe>
+      </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjw.put_model(mjm, batch_sizes={"geom_fluid": 3})
+    d = mjw.put_data(mjm, mjd, nworld=3)
+
+    # world 1 swaps routing: the ellipsoid geom falls back to the inertia box model, while the
+    # box geom switches to the ellipsoid model; world 2 halves the interaction coefficient
+    geom_fluid = m.geom_fluid.numpy()
+    geom_fluid[1, 0] = 0.0
+    geom_fluid[1, 1] = mjm.geom_fluid[0]
+    geom_fluid[2, 0, 0] = 0.5
+    m.geom_fluid.assign(geom_fluid)
+
+    out = wp.zeros((3, m.nC), dtype=float)
+    mjw.deriv_smooth_vel(m, d, out)
+
+    self.assertFalse(np.allclose(out.numpy()[0], out.numpy()[1]))
+
+    # the ellipsoid derivative scales with the interaction coefficient, like the force does
+    fluid_deriv = out.numpy() - d.M.numpy()
+    elemid = m.M_elemid.numpy()[0, 0]
+    _assert_eq(fluid_deriv[2, elemid], 0.5 * fluid_deriv[0, elemid], "coef-scaled qDeriv")
+
+    # MuJoCo fluid qDeriv parity is not yet exact (see test_smooth_vel_fluid), so each world
+    # is checked against an unbatched model carrying that world's coefficients
+    for worldid in range(3):
+      mjm.geom_fluid[:] = geom_fluid[worldid]
+      m_world = mjw.put_model(mjm)
+      d_world = mjw.put_data(mjm, mjd)
+      out_world = wp.zeros((1, m_world.nC), dtype=float)
+      mjw.deriv_smooth_vel(m_world, d_world, out_world)
+
+      _assert_eq(out.numpy()[worldid], out_world.numpy()[0], f"M - dt * qDeriv (world {worldid})")
+
+  def test_smooth_vel_fluid_massless_body(self):
+    """Tests that a massless fluid body contributes no qDeriv, like mj_fluid."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast" density="1.2" viscosity="0.1"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="ellipsoid" size=".1 .2 .3" mass="0" fluidshape="ellipsoid"/>
+            <body pos=".2 0 0">
+              <geom type="sphere" size=".1" mass="1"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 4 5 6"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+    mujoco.mj_step(mjm, mjd)
+
+    out_smooth_vel = wp.zeros((1, m.nC), dtype=float)
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    mjw_out = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(
+      mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
+    )
+    mjw_out = np.tril(mjw_out) + np.tril(mjw_out, -1).T
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_M = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+    mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
+
+    _assert_eq(mjw_out, mj_out, "M - dt * qDeriv")
+
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
   def test_smooth_vel(self, jacobian):
     """Tests qDeriv."""

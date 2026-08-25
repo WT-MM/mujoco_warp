@@ -1122,7 +1122,7 @@ class Model:
     geom_gap: additional contact detection buffer            (*, ngeom,)
     geom_surfacevel: surface velocity in local frame: lin,ang(*, ngeom, 6)
     geom_adhesion: adhesive force of contacts                (*, ngeom,)
-    geom_fluid: fluid interaction parameters                 (ngeom, mjNFLUID)
+    geom_fluid: fluid interaction parameters                 (*, ngeom, mjNFLUID)
     geom_rgba: rgba when material is omitted                 (*, ngeom, 4)
     site_type: geom type for rendering (GeomType)            (nsite,)
     site_bodyid: id of site's body                           (nsite,)
@@ -1378,9 +1378,7 @@ class Model:
     body_branches: flattened body ids for all branches
     body_branch_start: start index in body_branches for each branch   (nbranch + 1,)
     mocap_bodyid: id of body for mocap                       (nmocap,)
-    body_fluid_ellipsoid: does body use ellipsoid fluid      (nbody,)
-    body_fluid_ellipsoid_adr: body ids with ellipsoid fluid  (nbody_fluid_ellipsoid,)
-    body_fluid_box_adr: body ids with box fluid              (nbody_fluid_box,)
+    body_fluid_adr: candidate body ids for fluid derivatives (nbody_fluid,)
     jnt_limited_slide_hinge_adr: limited/slide/hinge jntadr
     jnt_limited_ball_adr: limited/ball jntadr
     body_isdofancestor: precomputed mask of which DOFs affect each body
@@ -1614,7 +1612,7 @@ class Model:
   geom_gap: array("*", "ngeom", float)
   geom_surfacevel: array("*", "ngeom", vec6)
   geom_adhesion: array("*", "ngeom", float)
-  geom_fluid: array("ngeom", 12, float)
+  geom_fluid: array("*", "ngeom", 12, float)
   geom_rgba: array("*", "ngeom", wp.vec4)
   site_type: array("nsite", int)
   site_bodyid: array("nsite", int)
@@ -1867,9 +1865,7 @@ class Model:
   body_branches: array("nbody_branches", int)
   body_branch_start: array("nbranch_start", int)
   mocap_bodyid: array("nmocap", int)
-  body_fluid_ellipsoid: array("nbody", bool)
-  body_fluid_ellipsoid_adr: array("nbody_fluid_ellipsoid", int)
-  body_fluid_box_adr: array("nbody_fluid_box", int)
+  body_fluid_adr: array("nbody_fluid", int)
   jnt_limited_slide_hinge_adr: array("njnt_limited_slide_hinge", int)
   jnt_limited_ball_adr: array("njnt_limited_ball", int)
   body_isdofancestor: array("nbody", "nv_pad", int)

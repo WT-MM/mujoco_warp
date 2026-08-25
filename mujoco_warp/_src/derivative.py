@@ -590,7 +590,7 @@ def _deriv_ellipsoid_fluid(
   opt_integrator: int,
   geom_type: wp.array[int],
   geom_size: wp.array2d[wp.vec3],
-  geom_fluid: wp.array2d[float],
+  geom_fluid: wp.array3d[float],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
   geom_xpos_in: wp.array2d[wp.vec3],
@@ -624,6 +624,7 @@ def _deriv_ellipsoid_fluid(
   lin_com = lin_global - wp.cross(xipos - subtree_root, ang_global)
 
   qderiv_contrib = float(0.0)
+  geom_fluid_id = worldid % geom_fluid.shape[0]
 
   cdof_ang_i = wp.vec3(cdof_i[0], cdof_i[1], cdof_i[2])
   cdof_lin_i = wp.vec3(cdof_i[3], cdof_i[4], cdof_i[5])
@@ -632,7 +633,7 @@ def _deriv_ellipsoid_fluid(
 
   for g in range(geomnum):
     geomid = geomadr + g
-    coef = geom_fluid[geomid, 0]
+    coef = geom_fluid[geom_fluid_id, geomid, 0]
     if coef <= 0.0:
       continue
 
@@ -654,13 +655,21 @@ def _deriv_ellipsoid_fluid(
     lin_vel = l_lin
 
     # read fluid coefficients
-    blunt_drag_coef = geom_fluid[geomid, 1]
-    slender_drag_coef = geom_fluid[geomid, 2]
-    ang_drag_coef = geom_fluid[geomid, 3]
-    kutta_lift_coef = geom_fluid[geomid, 4]
-    magnus_lift_coef = geom_fluid[geomid, 5]
-    virtual_mass = wp.vec3(geom_fluid[geomid, 6], geom_fluid[geomid, 7], geom_fluid[geomid, 8])
-    virtual_inertia = wp.vec3(geom_fluid[geomid, 9], geom_fluid[geomid, 10], geom_fluid[geomid, 11])
+    blunt_drag_coef = geom_fluid[geom_fluid_id, geomid, 1]
+    slender_drag_coef = geom_fluid[geom_fluid_id, geomid, 2]
+    ang_drag_coef = geom_fluid[geom_fluid_id, geomid, 3]
+    kutta_lift_coef = geom_fluid[geom_fluid_id, geomid, 4]
+    magnus_lift_coef = geom_fluid[geom_fluid_id, geomid, 5]
+    virtual_mass = wp.vec3(
+      geom_fluid[geom_fluid_id, geomid, 6],
+      geom_fluid[geom_fluid_id, geomid, 7],
+      geom_fluid[geom_fluid_id, geomid, 8],
+    )
+    virtual_inertia = wp.vec3(
+      geom_fluid[geom_fluid_id, geomid, 9],
+      geom_fluid[geom_fluid_id, geomid, 10],
+      geom_fluid[geom_fluid_id, geomid, 11],
+    )
 
     # ===== Build 6x6 B matrix as four 3x3 quadrants =====
     # B = [[B00, B01], [B10, B11]] where rows are [ang; lin], cols are [ang; lin]
@@ -819,108 +828,10 @@ def _deriv_ellipsoid_fluid(
     Bj_ang = B00 @ la_j + B01 @ ll_j
     Bj_lin = B10 @ la_j + B11 @ ll_j
 
-    # J_i^T @ (B @ J_j) = la_i . Bj_ang + ll_i . Bj_lin
-    qderiv_contrib += wp.dot(la_i, Bj_ang) + wp.dot(ll_i, Bj_lin)
+    # J_i^T @ (B @ J_j) = la_i . Bj_ang + ll_i . Bj_lin, scaled like the force by coef
+    qderiv_contrib += coef * (wp.dot(la_i, Bj_ang) + wp.dot(ll_i, Bj_lin))
 
   return qderiv_contrib
-
-
-@wp.kernel
-def _qderiv_ellipsoid_fluid(
-  # Model:
-  opt_timestep: wp.array[float],
-  opt_wind: wp.array[wp.vec3],
-  opt_density: wp.array[float],
-  opt_viscosity: wp.array[float],
-  opt_integrator: int,
-  body_parentid: wp.array[int],
-  body_rootid: wp.array[int],
-  body_geomnum: wp.array[int],
-  body_geomadr: wp.array[int],
-  dof_bodyid: wp.array[int],
-  geom_type: wp.array[int],
-  geom_size: wp.array2d[wp.vec3],
-  geom_fluid: wp.array2d[float],
-  body_fluid_ellipsoid_adr: wp.array[int],
-  body_isdofancestor: wp.array2d[int],
-  M_elemid: wp.array2d[int],
-  # Data in:
-  xipos_in: wp.array2d[wp.vec3],
-  geom_xpos_in: wp.array2d[wp.vec3],
-  geom_xmat_in: wp.array2d[wp.mat33],
-  subtree_com_in: wp.array2d[wp.vec3],
-  cdof_in: wp.array2d[wp.spatial_vector],
-  cvel_in: wp.array2d[wp.spatial_vector],
-  # In:
-  Mi: wp.array[int],
-  Mj: wp.array[int],
-  # Out:
-  qDeriv_out: wp.array2d[float],
-):
-  """Compute ellipsoid fluid force derivative contribution to qDeriv.
-
-  Parallelized over (world, fluid_body, elem). For each fluid body and DOF
-  pair, computes the 6x6 derivative matrix B in local geom frame via
-  _deriv_ellipsoid_fluid and accumulates J_i^T @ B @ J_j into qDeriv.
-  """
-  worldid, fluid_idx, elemid = wp.tid()
-
-  bodyid = body_fluid_ellipsoid_adr[fluid_idx]
-
-  dofiid = Mi[elemid]
-  dofjid = Mj[elemid]
-
-  madr = M_elemid[dofiid, dofjid]
-  if madr < 0:
-    return
-
-  # dofiid is the "deeper" DOF (Mi >= Mj in tree ordering).
-  # Any body that has dofiid in its chain also has dofjid.
-  bodyid_i = dof_bodyid[dofiid]
-
-  if bodyid_i == 0:
-    return
-
-  if body_isdofancestor[bodyid, dofiid] == 0:
-    return
-
-  wind = opt_wind[worldid % opt_wind.shape[0]]
-  density = opt_density[worldid % opt_density.shape[0]]
-  viscosity = opt_viscosity[worldid % opt_viscosity.shape[0]]
-  timestep = opt_timestep[worldid % opt_timestep.shape[0]]
-
-  if density <= 0.0 and viscosity <= 0.0:
-    return
-
-  cdof_i = cdof_in[worldid, dofiid]
-  cdof_j = cdof_in[worldid, dofjid]
-
-  contrib = _deriv_ellipsoid_fluid(
-    opt_integrator,
-    geom_type,
-    geom_size,
-    geom_fluid,
-    xipos_in,
-    geom_xpos_in,
-    geom_xmat_in,
-    subtree_com_in,
-    cvel_in,
-    worldid,
-    bodyid,
-    body_rootid[bodyid],
-    body_geomadr[bodyid],
-    body_geomnum[bodyid],
-    cdof_i,
-    cdof_j,
-    wind,
-    density,
-    viscosity,
-  )
-
-  contrib *= timestep
-
-  if contrib != 0.0:
-    wp.atomic_add(qDeriv_out[worldid], madr, -contrib)
 
 
 @wp.func
@@ -1017,7 +928,7 @@ def _get_jac_column_local(
 
 
 @wp.kernel
-def _qderiv_box_fluid(
+def _qderiv_fluid(
   # Model:
   opt_timestep: wp.array[float],
   opt_wind: wp.array[wp.vec3],
@@ -1026,15 +937,22 @@ def _qderiv_box_fluid(
   opt_integrator: int,
   body_parentid: wp.array[int],
   body_rootid: wp.array[int],
+  body_geomnum: wp.array[int],
+  body_geomadr: wp.array[int],
   body_mass: wp.array2d[float],
   body_inertia: wp.array2d[wp.vec3],
   dof_bodyid: wp.array[int],
-  body_fluid_box_adr: wp.array[int],
+  geom_type: wp.array[int],
+  geom_size: wp.array2d[wp.vec3],
+  geom_fluid: wp.array3d[float],
+  body_fluid_adr: wp.array[int],
   body_isdofancestor: wp.array2d[int],
   M_elemid: wp.array2d[int],
   # Data in:
   xipos_in: wp.array2d[wp.vec3],
   ximat_in: wp.array2d[wp.mat33],
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
   subtree_com_in: wp.array2d[wp.vec3],
   cdof_in: wp.array2d[wp.spatial_vector],
   cvel_in: wp.array2d[wp.spatial_vector],
@@ -1044,9 +962,14 @@ def _qderiv_box_fluid(
   # Out:
   qDeriv_out: wp.array2d[float],
 ):
-  worldid, fluid_idx, elemid = wp.tid()
+  """Compute fluid force derivative contribution to qDeriv.
 
-  bodyid = body_fluid_box_adr[fluid_idx]
+  Parallelized over (world, fluid_body, elem). For each fluid body and DOF
+  pair, computes the 6x6 derivative matrix B in the local ellipsoid or
+  inertia-box frame and accumulates J_i^T @ B @ J_j into qDeriv.
+  """
+  worldid, fluid_idx, elemid = wp.tid()
+  bodyid = body_fluid_adr[fluid_idx]
 
   dofiid = Mi[elemid]
   dofjid = Mj[elemid]
@@ -1055,6 +978,8 @@ def _qderiv_box_fluid(
   if madr < 0:
     return
 
+  # dofiid is the "deeper" DOF (Mi >= Mj in tree ordering).
+  # Any body that has dofiid in its chain also has dofjid.
   bodyid_i = dof_bodyid[dofiid]
 
   if bodyid_i == 0:
@@ -1071,43 +996,85 @@ def _qderiv_box_fluid(
   if density <= 0.0 and viscosity <= 0.0:
     return
 
-  # Body velocity and kinematics
-  b_ipos = xipos_in[worldid, bodyid]
-  b_imat = ximat_in[worldid, bodyid]
-  subtree_root = subtree_com_in[worldid, body_rootid[bodyid]]
+  # skip bodies with negligible mass
+  if body_mass[worldid % body_mass.shape[0], bodyid] < MJ_MINVAL:
+    return
 
-  vel_subtree = cvel_in[worldid, bodyid]
-  v_subtree_ang = wp.vec3(vel_subtree[0], vel_subtree[1], vel_subtree[2])
-  v_subtree_lin = wp.vec3(vel_subtree[3], vel_subtree[4], vel_subtree[5])
+  # geoms with positive fluid coefficient route the body to the ellipsoid model
+  ellipsoid = bool(False)
+  geom_fluid_id = worldid % geom_fluid.shape[0]
+  for i in range(body_geomnum[bodyid]):
+    if geom_fluid[geom_fluid_id, body_geomadr[bodyid] + i, 0] > 0.0:
+      ellipsoid = bool(True)
+      break
 
-  lin_com = v_subtree_lin - wp.cross(b_ipos - subtree_root, v_subtree_ang)
-  b_imat_T = wp.transpose(b_imat)
-  v_local_ang = b_imat_T @ v_subtree_ang
-  v_local_lin = b_imat_T @ lin_com
-  wind_local = b_imat_T @ wind
+  contrib = float(0.0)
 
-  lvel = wp.spatial_vector(v_local_ang, v_local_lin - wind_local)
+  if ellipsoid:
+    cdof_i = cdof_in[worldid, dofiid]
+    cdof_j = cdof_in[worldid, dofjid]
 
-  B = _deriv_box_fluid(
-    opt_integrator,
-    body_mass,
-    body_inertia,
-    worldid,
-    bodyid,
-    lvel,
-    density,
-    viscosity,
-  )
+    contrib = _deriv_ellipsoid_fluid(
+      opt_integrator,
+      geom_type,
+      geom_size,
+      geom_fluid,
+      xipos_in,
+      geom_xpos_in,
+      geom_xmat_in,
+      subtree_com_in,
+      cvel_in,
+      worldid,
+      bodyid,
+      body_rootid[bodyid],
+      body_geomadr[bodyid],
+      body_geomnum[bodyid],
+      cdof_i,
+      cdof_j,
+      wind,
+      density,
+      viscosity,
+    )
+  else:
+    # Body velocity and kinematics
+    b_ipos = xipos_in[worldid, bodyid]
+    b_imat = ximat_in[worldid, bodyid]
+    subtree_root = subtree_com_in[worldid, body_rootid[bodyid]]
 
-  # Jacobian transformation: J_i^T @ B @ J_j
-  J_i = _get_jac_column_local(
-    body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, dofiid, worldid, b_imat
-  )
-  J_j = _get_jac_column_local(
-    body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, dofjid, worldid, b_imat
-  )
+    vel_subtree = cvel_in[worldid, bodyid]
+    v_subtree_ang = wp.vec3(vel_subtree[0], vel_subtree[1], vel_subtree[2])
+    v_subtree_lin = wp.vec3(vel_subtree[3], vel_subtree[4], vel_subtree[5])
 
-  contrib = wp.dot(J_i, B @ J_j) * timestep
+    lin_com = v_subtree_lin - wp.cross(b_ipos - subtree_root, v_subtree_ang)
+    b_imat_T = wp.transpose(b_imat)
+    v_local_ang = b_imat_T @ v_subtree_ang
+    v_local_lin = b_imat_T @ lin_com
+    wind_local = b_imat_T @ wind
+
+    lvel = wp.spatial_vector(v_local_ang, v_local_lin - wind_local)
+
+    B = _deriv_box_fluid(
+      opt_integrator,
+      body_mass,
+      body_inertia,
+      worldid,
+      bodyid,
+      lvel,
+      density,
+      viscosity,
+    )
+
+    # Jacobian transformation: J_i^T @ B @ J_j
+    J_i = _get_jac_column_local(
+      body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, dofiid, worldid, b_imat
+    )
+    J_j = _get_jac_column_local(
+      body_parentid, body_rootid, dof_bodyid, subtree_com_in, cdof_in, b_ipos, bodyid, dofjid, worldid, b_imat
+    )
+
+    contrib = wp.dot(J_i, B @ J_j)
+
+  contrib *= timestep
 
   if contrib != 0.0:
     wp.atomic_add(qDeriv_out[worldid], madr, -contrib)
@@ -1210,64 +1177,38 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
       ],
       outputs=[out],
     )
-  if m.has_fluid:
-    if m.body_fluid_ellipsoid_adr.size > 0:
-      wp.launch(
-        _qderiv_ellipsoid_fluid,
-        dim=(d.nworld, m.body_fluid_ellipsoid_adr.size, Mi.size),
-        inputs=[
-          m.opt.timestep,
-          m.opt.wind,
-          m.opt.density,
-          m.opt.viscosity,
-          m.opt.integrator,
-          m.body_parentid,
-          m.body_rootid,
-          m.body_geomnum,
-          m.body_geomadr,
-          m.dof_bodyid,
-          m.geom_type,
-          m.geom_size,
-          m.geom_fluid,
-          m.body_fluid_ellipsoid_adr,
-          m.body_isdofancestor,
-          m.M_elemid,
-          d.xipos,
-          d.geom_xpos,
-          d.geom_xmat,
-          d.subtree_com,
-          d.cdof,
-          d.cvel,
-          Mi,
-          Mj,
-        ],
-        outputs=[out],
-      )
-    if m.body_fluid_box_adr.size > 0:
-      wp.launch(
-        _qderiv_box_fluid,
-        dim=(d.nworld, m.body_fluid_box_adr.size, Mi.size),
-        inputs=[
-          m.opt.timestep,
-          m.opt.wind,
-          m.opt.density,
-          m.opt.viscosity,
-          m.opt.integrator,
-          m.body_parentid,
-          m.body_rootid,
-          m.body_mass,
-          m.body_inertia,
-          m.dof_bodyid,
-          m.body_fluid_box_adr,
-          m.body_isdofancestor,
-          m.M_elemid,
-          d.xipos,
-          d.ximat,
-          d.subtree_com,
-          d.cdof,
-          d.cvel,
-          Mi,
-          Mj,
-        ],
-        outputs=[out],
-      )
+  if m.has_fluid and m.body_fluid_adr.size > 0:
+    wp.launch(
+      _qderiv_fluid,
+      dim=(d.nworld, m.body_fluid_adr.size, Mi.size),
+      inputs=[
+        m.opt.timestep,
+        m.opt.wind,
+        m.opt.density,
+        m.opt.viscosity,
+        m.opt.integrator,
+        m.body_parentid,
+        m.body_rootid,
+        m.body_geomnum,
+        m.body_geomadr,
+        m.body_mass,
+        m.body_inertia,
+        m.dof_bodyid,
+        m.geom_type,
+        m.geom_size,
+        m.geom_fluid,
+        m.body_fluid_adr,
+        m.body_isdofancestor,
+        m.M_elemid,
+        d.xipos,
+        d.ximat,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.subtree_com,
+        d.cdof,
+        d.cvel,
+        Mi,
+        Mj,
+      ],
+      outputs=[out],
+    )
