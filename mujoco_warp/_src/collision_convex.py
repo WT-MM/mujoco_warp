@@ -36,8 +36,6 @@ from mujoco_warp._src.collision_primitive import geom_collision_pair
 from mujoco_warp._src.collision_primitive import write_contact
 from mujoco_warp._src.math import make_frame
 from mujoco_warp._src.math import upper_trid_index
-from mujoco_warp._src.types import MJ_MAX_EPAFACES
-from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 from mujoco_warp._src.types import MJ_MAXCONPAIR
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import Data
@@ -1236,20 +1234,21 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
     nmeshdegmax = max(m.nmeshdegmax, 3)
 
   # ccd collider count
-  nccd = wp.zeros(len(GeomType) * (len(GeomType) + 1) // 2, dtype=int)
+  nccd = d._scratch.convex_nccd
+  nccd.zero_()
 
   # epa_vert: vertices in EPA polytope
-  epa_vert = wp.empty(shape=(d.naccdmax, 10 + 2 * epa_iterations), dtype=wp.vec3)
+  epa_vert = d._scratch.convex_epa_vert
   # epa_vert_index: vertex indices in EPA polytope
-  epa_vert_index = wp.empty(shape=(d.naccdmax, 10 + 2 * epa_iterations), dtype=int)
+  epa_vert_index = d._scratch.convex_epa_vert_index
   # epa_face: faces of polytope represented by three indices
-  epa_face = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int)
+  epa_face = d._scratch.convex_epa_face
   # epa_pr: projection of origin on polytope faces
-  epa_pr = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3)
+  epa_pr = d._scratch.convex_epa_pr
   # epa_norm2: epa_pr * epa_pr
-  epa_norm2 = wp.empty(shape=(d.naccdmax, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float)
+  epa_norm2 = d._scratch.convex_epa_norm2
   # epa_horizon: index pair (i j) of edges on horizon
-  epa_horizon = wp.empty(shape=(d.naccdmax, MJ_MAX_EPAHORIZON), dtype=int)
+  epa_horizon = d._scratch.convex_epa_horizon
 
   # Contact outputs
   contact_outputs = [
@@ -1343,27 +1342,27 @@ def convex_narrowphase(m: Model, d: Data, ctx: CollisionContext, collision_table
 
   # Allocate multiccd arrays only for non-heightfield collisions
   # multiccd_polygon: clipped contact surface
-  multiccd_polygon = wp.empty(shape=(d.naccdmax, 2 * npolygonmax), dtype=wp.vec3)
+  multiccd_polygon = d._scratch.convex_multiccd_polygon
   # multiccd_clipped: clipped contact surface (intermediate)
-  multiccd_clipped = wp.empty(shape=(d.naccdmax, 2 * npolygonmax), dtype=wp.vec3)
+  multiccd_clipped = d._scratch.convex_multiccd_clipped
   # multiccd_pnormal: plane normal of clipping polygon
-  multiccd_pnormal = wp.empty(shape=(d.naccdmax, npolygonmax), dtype=wp.vec3)
+  multiccd_pnormal = d._scratch.convex_multiccd_pnormal
   # multiccd_pdist: plane distance of clipping polygon
-  multiccd_pdist = wp.empty(shape=(d.naccdmax, npolygonmax), dtype=float)
+  multiccd_pdist = d._scratch.convex_multiccd_pdist
   # multiccd_idx1: list of normal index candidates for Geom 1
-  multiccd_idx1 = wp.empty(shape=(d.naccdmax, nmeshdegmax), dtype=int)
+  multiccd_idx1 = d._scratch.convex_multiccd_idx1
   # multiccd_idx2: list of normal index candidates for Geom 2
-  multiccd_idx2 = wp.empty(shape=(d.naccdmax, nmeshdegmax), dtype=int)
+  multiccd_idx2 = d._scratch.convex_multiccd_idx2
   # multiccd_n1: list of normal candidates for Geom 1
-  multiccd_n1 = wp.empty(shape=(d.naccdmax, nmeshdegmax), dtype=wp.vec3)
+  multiccd_n1 = d._scratch.convex_multiccd_n1
   # multiccd_n2: list of normal candidates for Geom 1
-  multiccd_n2 = wp.empty(shape=(d.naccdmax, nmeshdegmax), dtype=wp.vec3)
+  multiccd_n2 = d._scratch.convex_multiccd_n2
   # multiccd_endvert: list of edge vertices candidates
-  multiccd_endvert = wp.empty(shape=(d.naccdmax, nmeshdegmax), dtype=wp.vec3)
+  multiccd_endvert = d._scratch.convex_multiccd_endvert
   # multiccd_face1: contact face
-  multiccd_face1 = wp.empty(shape=(d.naccdmax, npolygonmax), dtype=wp.vec3)
+  multiccd_face1 = d._scratch.convex_multiccd_face1
   # multiccd_face2: contact face
-  multiccd_face2 = wp.empty(shape=(d.naccdmax, npolygonmax), dtype=wp.vec3)
+  multiccd_face2 = d._scratch.convex_multiccd_face2
 
   # Launch non-heightfield collision kernels (no hfield args, 78 args total)
   for geom_pair in collision_table:

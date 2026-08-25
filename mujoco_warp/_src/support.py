@@ -234,7 +234,7 @@ def mul_m(
     M: Input matrix: M @ vec.
   """
   check_skip = skip is not None
-  skip = skip or wp.empty(0, dtype=bool)
+  skip = skip or d._scratch.empty_bool
 
   if M is None:
     M = d.M

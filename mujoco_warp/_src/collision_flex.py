@@ -23,8 +23,6 @@ from mujoco_warp._src.collision_core import sap_binary_search
 from mujoco_warp._src.collision_core import sap_range
 from mujoco_warp._src.collision_gjk import ccd
 from mujoco_warp._src.math import make_frame
-from mujoco_warp._src.types import MJ_MAX_EPAFACES
-from mujoco_warp._src.types import MJ_MAX_EPAHORIZON
 from mujoco_warp._src.types import MJ_MAXCONPAIR
 from mujoco_warp._src.types import MJ_MAXVAL
 from mujoco_warp._src.types import MJ_MINMU
@@ -2603,57 +2601,35 @@ class FlexWorkspace:
 
 
 def _allocate_flex_workspace(m: Model, d: Data) -> FlexWorkspace:
-  epa_iterations = m.opt.ccd_iterations
-  has_epa = m.nmesh > 0 or m.has_ellipsoid_geom or m.has_flex_selfcollide or m.nflex > 1 or m.has_3d_flex
-  capacity = d.naccdmax if has_epa else 1
-
-  needs_nccd = m.nmesh > 0 or m.has_ellipsoid_geom or m.has_3d_flex
-  nccd = wp.zeros(1, dtype=int) if needs_nccd else None
-
   has_fps = m.has_flex_selfcollide or m.nflex > 1
-  if has_fps:
-    world_stride = m.ngeom * m.nflex + m.nflex * m.nflex
-    nmax_groups = d.nworld * world_stride
-    cand_active_sorted = wp.empty(d.naconmax, dtype=int)
-    flex_group_temp = wp.empty(d.naconmax, dtype=int)
-    flex_group_ids = wp.empty(d.naconmax, dtype=int)
-    flex_group_start_indices = wp.full(nmax_groups, -1, dtype=int)
-    flex_fps_min_dist = wp.empty(d.naconmax, dtype=float)
-    flex_num_groups = wp.zeros(1, dtype=int)
-  else:
-    cand_active_sorted = None
-    flex_group_temp = None
-    flex_group_ids = None
-    flex_group_start_indices = None
-    flex_fps_min_dist = None
-    flex_num_groups = None
+  scratch = d._scratch
 
   return FlexWorkspace(
-    dist=wp.empty(d.naconmax, dtype=float),
-    pos=wp.empty(d.naconmax, dtype=wp.vec3),
-    nrm=wp.empty(d.naconmax, dtype=wp.vec3),
-    geom=wp.empty(d.naconmax, dtype=wp.vec2i),
-    flex=wp.empty(d.naconmax, dtype=wp.vec2i),
-    elem=wp.empty(d.naconmax, dtype=wp.vec2i),
-    vert=wp.empty(d.naconmax, dtype=wp.vec2i),
-    worldid=wp.empty(d.naconmax, dtype=int),
-    ncand=wp.zeros(1, dtype=int),
-    filter_key=wp.empty(d.naconmax * 2, dtype=wp.int64),
-    filter_val=wp.empty(d.naconmax * 2, dtype=int),
-    cand_active=wp.empty(d.naconmax, dtype=int),
-    cand_active_sorted=cand_active_sorted,
-    flex_group_temp=flex_group_temp,
-    flex_group_ids=flex_group_ids,
-    flex_group_start_indices=flex_group_start_indices,
-    flex_fps_min_dist=flex_fps_min_dist,
-    flex_num_groups=flex_num_groups,
-    epa_vert=wp.empty(shape=(capacity, 10 + 2 * epa_iterations), dtype=wp.vec3),
-    epa_vert_index=wp.empty(shape=(capacity, 10 + 2 * epa_iterations), dtype=int),
-    epa_face=wp.empty(shape=(capacity, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=int),
-    epa_pr=wp.empty(shape=(capacity, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=wp.vec3),
-    epa_norm2=wp.empty(shape=(capacity, 6 + MJ_MAX_EPAFACES * epa_iterations), dtype=float),
-    epa_horizon=wp.empty(shape=(capacity, MJ_MAX_EPAHORIZON), dtype=int),
-    nccd=nccd,
+    dist=scratch.flex_dist,
+    pos=scratch.flex_pos,
+    nrm=scratch.flex_nrm,
+    geom=scratch.flex_geom,
+    flex=scratch.flex_flex,
+    elem=scratch.flex_elem,
+    vert=scratch.flex_vert,
+    worldid=scratch.flex_worldid,
+    ncand=scratch.flex_ncand,
+    filter_key=scratch.flex_filter_key.reshape(-1),
+    filter_val=scratch.flex_filter_val.reshape(-1),
+    cand_active=scratch.flex_cand_active,
+    cand_active_sorted=scratch.flex_cand_active_sorted if has_fps else None,
+    flex_group_temp=scratch.flex_group_temp if has_fps else None,
+    flex_group_ids=scratch.flex_group_ids if has_fps else None,
+    flex_group_start_indices=scratch.flex_group_start_indices.reshape(-1) if has_fps else None,
+    flex_fps_min_dist=scratch.flex_fps_min_dist if has_fps else None,
+    flex_num_groups=scratch.flex_num_groups if has_fps else None,
+    epa_vert=scratch.flex_epa_vert,
+    epa_vert_index=scratch.flex_epa_vert_index,
+    epa_face=scratch.flex_epa_face,
+    epa_pr=scratch.flex_epa_pr,
+    epa_norm2=scratch.flex_epa_norm2,
+    epa_horizon=scratch.flex_epa_horizon,
+    nccd=scratch.flex_nccd if scratch.flex_nccd.size else None,
   )
 
 
@@ -3026,14 +3002,14 @@ def _run_flex_sap_sort(
   direction = wp.vec3(0.5935, 0.7790, 0.1235)
   direction = wp.normalize(direction)
 
-  sap_lower = wp.empty((d.nworld, nelem, 2), dtype=float)
-  sap_upper = wp.empty((d.nworld, nelem), dtype=float)
-  sap_sort_index = wp.empty((d.nworld, nelem, 2), dtype=int)
-  sap_range_arr = wp.empty((d.nworld, nelem), dtype=int)
-  sap_cumsum = wp.empty((d.nworld, nelem), dtype=int)
-  sap_seg_index = wp.empty(d.nworld + 1, dtype=int)
-  elem_aabb_lower = wp.empty((d.nworld, nelem), dtype=wp.vec3)
-  elem_aabb_upper = wp.empty((d.nworld, nelem), dtype=wp.vec3)
+  sap_lower = d._scratch.flex_sap_lower
+  sap_upper = d._scratch.flex_sap_upper
+  sap_sort_index = d._scratch.flex_sap_sort_index
+  sap_range_arr = d._scratch.flex_sap_range
+  sap_cumsum = d._scratch.flex_sap_cumulative_sum
+  sap_seg_index = d._scratch.flex_sap_segmented_index.reshape(-1)
+  elem_aabb_lower = d._scratch.flex_elem_aabb_lower
+  elem_aabb_upper = d._scratch.flex_elem_aabb_upper
 
   wp.launch(
     _flex_sap_project,
@@ -3069,7 +3045,8 @@ def _run_flex_sap_sort(
     sap_lower.reshape((-1, nelem)),
     sap_sort_index.reshape((-1, nelem)),
     nworldelem,
-    sap_seg_index,
+    sap_seg_index[: d.nworld],
+    sap_seg_index[1 : d.nworld + 1],
   )
 
   wp.launch(
@@ -3110,7 +3087,7 @@ def _run_flex_narrowphase(
 ):
   """Executes narrowphase collision detection for element pairs."""
   epa_iterations = m.opt.ccd_iterations
-  workspace_verts = wp.empty(d.naconmax * 8, dtype=wp.vec3)
+  workspace_verts = d._scratch.flex_workspace_verts.reshape(-1)
   wp.launch(
     _flex_narrowphase(bool(m.opt.warn_overflow)),
     dim=d.naconmax,
@@ -3264,6 +3241,13 @@ def flex_collision(m: Model, d: Data, ctx):
   flex_broadphase_aabb(m, d)
 
   ws = _allocate_flex_workspace(m, d)
+  ws.ncand.zero_()
+  if ws.nccd is not None:
+    ws.nccd.zero_()
+  if ws.flex_num_groups is not None:
+    ws.flex_num_groups.zero_()
+  if ws.flex_group_start_indices is not None:
+    ws.flex_group_start_indices.fill_(-1)
 
   # Compute SAP projection and segmented sort once if needed by self or flex-flex collision
   sap_data = None

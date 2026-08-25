@@ -557,7 +557,7 @@ def apply_sensor_delay(m: Model, d: Data, sensorid: wp.array[int]):
     return
 
   # Save fresh sensordata before delay overwrite
-  fresh_sensordata = wp.empty_like(d.sensordata)
+  fresh_sensordata = d._scratch.fresh_sensordata
   wp.copy(fresh_sensordata, d.sensordata)
 
   # Read delayed values from buffer → overwrite sensordata

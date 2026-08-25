@@ -112,6 +112,45 @@ def _create_solver_context(m: types.Model, d: types.Data) -> SolverContext:
   )
 
 
+def _solver_context_from_scratch(d: types.Data, compact: bool = False) -> SolverContext:
+  prefix = "compact_solver_" if compact else "solver_"
+  scratch = d._scratch
+
+  def get(name: str):
+    return getattr(scratch, prefix + name)
+
+  ctx = SolverContext(
+    Jaref=get("Jaref"),
+    search_dot=get("search_dot"),
+    done=get("done"),
+    grad=get("grad"),
+    grad_dot=get("grad_dot"),
+    newton_decrement=get("newton_decrement"),
+    Mgrad=get("Mgrad"),
+    search=get("search"),
+    mv=get("mv"),
+    jv=get("jv"),
+    quad=get("quad"),
+    alpha=get("alpha"),
+    grad_scale=get("grad_scale"),
+    improvement=get("improvement"),
+    ls_exhausted=get("ls_exhausted"),
+    search_unchanged=get("search_unchanged"),
+    prev_grad=get("prev_grad"),
+    prev_Mgrad=get("prev_Mgrad"),
+    beta=get("beta"),
+    beta_den=get("beta_den"),
+    h=get("h"),
+    hfactor=get("hfactor"),
+    quad_changed_ids=get("quad_changed_ids"),
+    quad_changed_count=get("quad_changed_count"),
+    state_changed_count=get("state_changed_count"),
+  )
+  ctx.grad.zero_()
+  ctx.ls_exhausted.zero_()
+  return ctx
+
+
 @wp.func
 def _rescale(nv: int, meaninertia: float, value: float) -> float:
   return value / (meaninertia * float(nv))
@@ -3682,7 +3721,7 @@ def solve(m: types.Model, d: types.Data):
     wp.copy(d.qacc, d.qacc_smooth)
     d.solver_niter.fill_(0)
   else:
-    ctx = _create_solver_context(m, d)
+    ctx = _solver_context_from_scratch(d)
     _solve(m, d, ctx)
 
 
@@ -3714,7 +3753,8 @@ def _solve(m: types.Model, d: types.Data, ctx: SolverContext, compact: bool = Fa
       block_dim=m.block_dim.solve_init_search_cg,
     )
 
-  nsolving = wp.full(shape=(1,), value=d.nworld, dtype=int)
+  nsolving = d._scratch.solver_nsolving
+  nsolving.fill_(d.nworld)
   if m.opt.iterations != 0 and m.opt.graph_conditional:
     # Note: the iteration kernel (indicated by while_body) is repeatedly launched
     # as long as condition_iteration is not zero.
@@ -4051,7 +4091,7 @@ def solve_compact(m: types.Model, d: types.Data):
     efc=efc2,
   )
 
-  sctx = _create_solver_context(m2, d2)
+  sctx = _solver_context_from_scratch(d, compact=True)
   # compact kernels read the full-coordinate sparse structures (M, J) through
   # the compaction maps instead of dense products on gathered blocks
   sctx.compact_m_full = m

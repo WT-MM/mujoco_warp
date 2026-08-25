@@ -19,7 +19,7 @@ import warp as wp
 
 from mujoco_warp._src.collision_convex import convex_narrowphase
 from mujoco_warp._src.collision_core import CollisionContext
-from mujoco_warp._src.collision_core import create_collision_context
+from mujoco_warp._src.collision_core import create_collision_context as create_collision_context
 from mujoco_warp._src.collision_core import sap_binary_search
 from mujoco_warp._src.collision_core import sap_range
 from mujoco_warp._src.collision_flex import flex_collision
@@ -602,12 +602,12 @@ def sap_broadphase(
   direction = wp.vec3(0.5935, 0.7790, 0.1235)
   direction = wp.normalize(direction)
 
-  projection_lower = wp.empty((d.nworld, m.ngeom, 2), dtype=float)
-  projection_upper = wp.empty((d.nworld, m.ngeom), dtype=float)
-  sort_index = wp.empty((d.nworld, m.ngeom, 2), dtype=int)
-  range_ = wp.empty((d.nworld, m.ngeom), dtype=int)
-  cumulative_sum = wp.empty((d.nworld, m.ngeom), dtype=int)
-  segmented_index = wp.empty(d.nworld + 1 if m.opt.broadphase == BroadphaseType.SAP_SEGMENTED else 0, dtype=int)
+  projection_lower = d._scratch.sap_projection_lower
+  projection_upper = d._scratch.sap_projection_upper
+  sort_index = d._scratch.sap_sort_index
+  range_ = d._scratch.sap_range
+  cumulative_sum = d._scratch.sap_cumulative_sum
+  segmented_index = d._scratch.sap_segmented_index.reshape(-1)
 
   wp.launch(
     kernel=_sap_project(m.opt.broadphase),
@@ -631,7 +631,11 @@ def sap_broadphase(
     )
   else:
     wp.utils.segmented_sort_pairs(
-      projection_lower.reshape((-1, m.ngeom)), sort_index.reshape((-1, m.ngeom)), nworldgeom, segmented_index
+      projection_lower.reshape((-1, m.ngeom)),
+      sort_index.reshape((-1, m.ngeom)),
+      nworldgeom,
+      segmented_index[: d.nworld],
+      segmented_index[1 : d.nworld + 1],
     )
 
   wp.launch(
@@ -819,7 +823,8 @@ def nxn_broadphase(
   # (nothing sleeps between the passes), so the condition is derived here rather than threaded in.
   cond = None
   if incremental and m.opt.graph_conditional:
-    cond = wp.zeros(1, dtype=int)
+    cond = d._scratch.nxn_condition
+    cond.zero_()
     wp.launch(_any_awake_changed, dim=(d.nworld, m.nbody), inputs=[d.body_awake, awake_prev], outputs=[cond])
 
   def _launch():
@@ -911,8 +916,11 @@ def collision(
     d.nacon.zero_()
     return
 
-  # TODO(team): create context outside collision?
-  ctx = create_collision_context(d.naconmax)
+  ctx = CollisionContext(
+    collision_pair=d._scratch.collision_pair,
+    collision_pairid=d._scratch.collision_pairid,
+    collision_worldid=d._scratch.collision_worldid,
+  )
 
   incremental = awake_prev is not None
 

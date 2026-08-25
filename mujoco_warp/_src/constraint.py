@@ -4898,7 +4898,7 @@ def _add_surface_vel(is_pyramidal: bool):
 def make_constraint(m: types.Model, d: types.Data):
   """Creates constraint jacobians and other supporting data."""
   newton = m.opt.solver == types.SolverType.NEWTON
-  efc_nnz = wp.empty((d.nworld,), dtype=int)
+  efc_nnz = d._scratch.efc_nnz
 
   wp.launch(
     _zero_constraint_counts,

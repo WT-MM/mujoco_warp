@@ -966,7 +966,8 @@ def sleep(m: types.Model, d: types.Data):
   )
 
   # 2. Check which constraint islands can sleep (all trees in island must be asleep)
-  island_can_sleep = wp.ones((d.nworld, m.ntree), dtype=int)
+  island_can_sleep = d._scratch.island_can_sleep
+  island_can_sleep.fill_(1)
   wp.launch(
     _check_island_can_sleep,
     dim=(d.nworld, m.ntree),

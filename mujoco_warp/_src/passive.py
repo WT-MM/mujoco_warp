@@ -528,7 +528,7 @@ def _fluid_force(
 
 
 def _fluid(m: Model, d: Data):
-  fluid_applied = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
+  fluid_applied = d._scratch.fluid_applied
 
   wp.launch(
     _fluid_force,
@@ -1315,8 +1315,10 @@ def passive(m: Model, d: Data):
   flex_spring_body_force = None
   flex_damper_body_force = None
   if m.nflex > 0:
-    flex_spring_body_force = wp.zeros((d.nworld, m.nbody), dtype=wp.spatial_vector, device=d.qfrc_spring.device)
-    flex_damper_body_force = wp.zeros((d.nworld, m.nbody), dtype=wp.spatial_vector, device=d.qfrc_spring.device)
+    flex_spring_body_force = d._scratch.flex_spring_body_force
+    flex_damper_body_force = d._scratch.flex_damper_body_force
+    flex_spring_body_force.zero_()
+    flex_damper_body_force.zero_()
 
   if not dsbl_spring:
     wp.launch(
@@ -1424,8 +1426,8 @@ def passive(m: Model, d: Data):
 
   # Launch passive interp kernel for interpolated flex (trilinear/quadratic)
   if m.nflex and m.nflexintcell > 0:
-    displ_scratch = wp.empty((d.nworld, m.nflexintcell, 27), dtype=wp.vec3)
-    vel_corot_scratch = wp.empty((d.nworld, m.nflexintcell, 27), dtype=wp.vec3)
+    displ_scratch = d._scratch.flex_displ
+    vel_corot_scratch = d._scratch.flex_vel_corot
     wp.launch(
       _flex_passive_interp,
       dim=(d.nworld, m.nflexintcell),

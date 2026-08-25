@@ -657,7 +657,8 @@ def fwd_position(m: Model, d: Data, factorize: bool = True):
       sleep.wake_collision(m, d)
       # snapshot the awake state pass 1 used, before update_sleep overwrites it. a body is "newly
       # awakened" if it was asleep here but awake after update_sleep below.
-      awake_prev = wp.clone(d.body_awake)
+      awake_prev = d._scratch.awake_prev
+      wp.copy(awake_prev, d.body_awake)
       sleep.update_sleep(m, d)
       # pass 2: passing awake_prev runs the incremental pass, emitting only pairs involving a
       # newly-awakened body and appending them to the pass-1 buffer.
@@ -1160,7 +1161,7 @@ def fwd_actuation(m: Model, d: Data):
 
   # read delayed ctrl (or direct copy if no delay)
   if m.nhistory > 0:
-    ctrl = wp.empty((d.nworld, m.nu), dtype=float)
+    ctrl = d._scratch.delayed_ctrl
     history.read_ctrl_delayed(m, d, ctrl)
   else:
     ctrl = d.ctrl
@@ -1206,7 +1207,8 @@ def fwd_actuation(m: Model, d: Data):
 
   if m.ntendon:
     # total actuator force at tendon
-    ten_actfrc = wp.zeros((d.nworld, m.ntendon), dtype=float)
+    ten_actfrc = d._scratch.ten_actfrc
+    ten_actfrc.zero_()
     wp.launch(
       _tendon_actuator_force,
       dim=(d.nworld, m.nu),

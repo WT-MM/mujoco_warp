@@ -2071,6 +2071,182 @@ class Constraint:
 
 
 @dataclasses.dataclass
+class _DataScratch:
+  """Workspace arrays reused by forward dynamics."""
+
+  # constraint
+  efc_nnz: array("nworld", int)
+
+  # solver
+  solver_Jaref: array("nworld", "njmax", float)
+  solver_search_dot: array("nworld", float)
+  solver_done: array("nworld", bool)
+  solver_grad: array("nworld", "nv_pad", float)
+  solver_grad_dot: array("nworld", float)
+  solver_newton_decrement: array("nworld", float)
+  solver_Mgrad: array("nworld", "solver_cg_nv_pad", float)
+  solver_search: array("nworld", "nv", float)
+  solver_mv: array("nworld", "nv", float)
+  solver_jv: array("nworld", "njmax", float)
+  solver_quad: array("nworld", "njmax", wp.vec3)
+  solver_alpha: array("nworld", float)
+  solver_grad_scale: array("nworld", float)
+  solver_improvement: array("nworld", float)
+  solver_ls_exhausted: array("nworld", bool)
+  solver_search_unchanged: array("nworld", bool)
+  solver_prev_grad: array("nworld", "solver_cg_nv", float)
+  solver_prev_Mgrad: array("nworld", "solver_cg_nv", float)
+  solver_beta: array("solver_cg_nworld", float)
+  solver_beta_den: array("solver_cg_nworld", float)
+  solver_h: array("nworld", "solver_h_nv_pad", "solver_h_nv_pad", float)
+  solver_hfactor: array("nworld", "solver_hfactor_nv_pad", "solver_hfactor_nv_pad", float)
+  solver_quad_changed_ids: array("nworld", "solver_incremental_njmax", int)
+  solver_quad_changed_count: array("solver_incremental_nworld", int)
+  solver_state_changed_count: array("solver_incremental_nworld", int)
+  solver_nsolving: array(1, int)
+
+  # compact solver
+  compact_solver_Jaref: array("nworld", "compact_njmax", float)
+  compact_solver_search_dot: array("compact_nworld", float)
+  compact_solver_done: array("compact_nworld", bool)
+  compact_solver_grad: array("nworld", "compact_nv_pad", float)
+  compact_solver_grad_dot: array("compact_nworld", float)
+  compact_solver_newton_decrement: array("compact_nworld", float)
+  compact_solver_Mgrad: array("nworld", "compact_solver_cg_nv_pad", float)
+  compact_solver_search: array("nworld", "compact_nv", float)
+  compact_solver_mv: array("nworld", "compact_nv", float)
+  compact_solver_jv: array("nworld", "compact_njmax", float)
+  compact_solver_quad: array("nworld", "compact_njmax", wp.vec3)
+  compact_solver_alpha: array("compact_nworld", float)
+  compact_solver_grad_scale: array("compact_nworld", float)
+  compact_solver_improvement: array("compact_nworld", float)
+  compact_solver_ls_exhausted: array("compact_nworld", bool)
+  compact_solver_search_unchanged: array("compact_nworld", bool)
+  compact_solver_prev_grad: array("nworld", "compact_solver_cg_nv", float)
+  compact_solver_prev_Mgrad: array("nworld", "compact_solver_cg_nv", float)
+  compact_solver_beta: array("compact_solver_cg_nworld", float)
+  compact_solver_beta_den: array("compact_solver_cg_nworld", float)
+  compact_solver_h: array("nworld", "compact_solver_h_nv", "compact_solver_h_nv", float)
+  compact_solver_hfactor: array("nworld", "compact_solver_hfactor_nv", "compact_solver_hfactor_nv", float)
+  compact_solver_quad_changed_ids: array("nworld", "compact_solver_incremental_njmax", int)
+  compact_solver_quad_changed_count: array("compact_solver_incremental_nworld", int)
+  compact_solver_state_changed_count: array("compact_solver_incremental_nworld", int)
+
+  # collision
+  collision_pair: array("naconmax", wp.vec2i)
+  collision_pairid: array("naconmax", wp.vec2i)
+  collision_worldid: array("naconmax", int)
+  sap_projection_lower: array("nworld", "ngeom", 2, float)
+  sap_projection_upper: array("nworld", "ngeom", float)
+  sap_sort_index: array("nworld", "ngeom", 2, int)
+  sap_range: array("nworld", "ngeom", int)
+  sap_cumulative_sum: array("nworld", "ngeom", int)
+  sap_segmented_index: array("nworld", 2, int)
+  nxn_condition: array(1, int)
+
+  # convex collision
+  convex_nccd: array("ngeom_pair_type", int)
+  convex_epa_vert: array("naccdmax", "convex_epa_vert_size", wp.vec3)
+  convex_epa_vert_index: array("naccdmax", "convex_epa_vert_size", int)
+  convex_epa_face: array("naccdmax", "convex_epa_face_size", int)
+  convex_epa_pr: array("naccdmax", "convex_epa_face_size", wp.vec3)
+  convex_epa_norm2: array("naccdmax", "convex_epa_face_size", float)
+  convex_epa_horizon: array("naccdmax", "epa_horizon_size", int)
+  convex_multiccd_polygon: array("naccdmax", "multiccd_polygon_size", wp.vec3)
+  convex_multiccd_clipped: array("naccdmax", "multiccd_polygon_size", wp.vec3)
+  convex_multiccd_pnormal: array("naccdmax", "multiccd_npolygonmax", wp.vec3)
+  convex_multiccd_pdist: array("naccdmax", "multiccd_npolygonmax", float)
+  convex_multiccd_idx1: array("naccdmax", "multiccd_nmeshdegmax", int)
+  convex_multiccd_idx2: array("naccdmax", "multiccd_nmeshdegmax", int)
+  convex_multiccd_n1: array("naccdmax", "multiccd_nmeshdegmax", wp.vec3)
+  convex_multiccd_n2: array("naccdmax", "multiccd_nmeshdegmax", wp.vec3)
+  convex_multiccd_endvert: array("naccdmax", "multiccd_nmeshdegmax", wp.vec3)
+  convex_multiccd_face1: array("naccdmax", "multiccd_npolygonmax", wp.vec3)
+  convex_multiccd_face2: array("naccdmax", "multiccd_npolygonmax", wp.vec3)
+
+  # flex collision
+  flex_dist: array("flex_naconmax", float)
+  flex_pos: array("flex_naconmax", wp.vec3)
+  flex_nrm: array("flex_naconmax", wp.vec3)
+  flex_geom: array("flex_naconmax", wp.vec2i)
+  flex_flex: array("flex_naconmax", wp.vec2i)
+  flex_elem: array("flex_naconmax", wp.vec2i)
+  flex_vert: array("flex_naconmax", wp.vec2i)
+  flex_worldid: array("flex_naconmax", int)
+  flex_ncand: array("flex_scalar_size", int)
+  flex_filter_key: array("flex_naconmax", 2, wp.int64)
+  flex_filter_val: array("flex_naconmax", 2, int)
+  flex_cand_active: array("flex_naconmax", int)
+  flex_cand_active_sorted: array("flex_fps_naconmax", int)
+  flex_group_temp: array("flex_fps_naconmax", int)
+  flex_group_ids: array("flex_fps_naconmax", int)
+  flex_group_start_indices: array("nworld", "flex_world_stride", int)
+  flex_fps_min_dist: array("flex_fps_naconmax", float)
+  flex_num_groups: array("flex_fps_scalar_size", int)
+  flex_nccd: array("flex_nccd_size", int)
+  flex_epa_vert: array("flex_epa_capacity", "flex_epa_vert_size", wp.vec3)
+  flex_epa_vert_index: array("flex_epa_capacity", "flex_epa_vert_size", int)
+  flex_epa_face: array("flex_epa_capacity", "flex_epa_face_size", int)
+  flex_epa_pr: array("flex_epa_capacity", "flex_epa_face_size", wp.vec3)
+  flex_epa_norm2: array("flex_epa_capacity", "flex_epa_face_size", float)
+  flex_epa_horizon: array("flex_epa_capacity", "epa_horizon_size", int)
+  flex_sap_lower: array("nworld", "flex_sap_nelem", 2, float)
+  flex_sap_upper: array("nworld", "flex_sap_nelem", float)
+  flex_sap_sort_index: array("nworld", "flex_sap_nelem", 2, int)
+  flex_sap_range: array("nworld", "flex_sap_nelem", int)
+  flex_sap_cumulative_sum: array("nworld", "flex_sap_nelem", int)
+  flex_sap_segmented_index: array("nworld", 2, int)
+  flex_elem_aabb_lower: array("nworld", "flex_sap_nelem", wp.vec3)
+  flex_elem_aabb_upper: array("nworld", "flex_sap_nelem", wp.vec3)
+  flex_workspace_verts: array("flex_naconmax", 8, wp.vec3)
+
+  # position and velocity stages
+  awake_prev: array("nworld", "sleep_nbody", int)
+  wrap_geom_xpos: array("nworld", "nwrap", wp.spatial_vector)
+  moment_nnz: array("nworld", int)
+  transmission_ncon: array("nworld", "nacttrnbody", int)
+  fluid_applied: array("nworld", "fluid_nbody", wp.spatial_vector)
+  flex_spring_body_force: array("nworld", "flex_nbody", wp.spatial_vector)
+  flex_damper_body_force: array("nworld", "flex_nbody", wp.spatial_vector)
+  flex_displ: array("nworld", "nflexintcell", 27, wp.vec3)
+  flex_vel_corot: array("nworld", "nflexintcell", 27, wp.vec3)
+  ten_Jdot: array("nworld", "nJten", float)
+  ten_bias_coef: array("nworld", "ntendon", float)
+  subtree_bodyvel: array("nworld", "subtree_nbody", wp.spatial_vector)
+  energy_mv: array("nworld", "nv", float)
+  delayed_ctrl: array("nworld", "delayed_nu", float)
+  ten_actfrc: array("nworld", "ntendon", float)
+
+  # sensors
+  rangefinder_dist: array("nworld", "nrangefinder", float)
+  rangefinder_pnt: array("nworld", "nrangefinder", wp.vec3)
+  rangefinder_vec: array("nworld", "nrangefinder", wp.vec3)
+  rangefinder_geomid: array("nworld", "nrangefinder", int)
+  rangefinder_normal: array("nworld", "nrangefinder", wp.vec3)
+  sensor_collision: array("nworld", "nsensorcollision", 8, 7, float)
+  weld_geom_count: array("nworld", "tactile_nbody", int)
+  weld_geom_list: array("nworld", "tactile_nbody", MJ_MAXCONPAIR, int)
+  sensor_contact_nmatch: array("nworld", "nsensorcontact", int)
+  sensor_contact_matchid: array("nworld", "nsensorcontact", "contact_sensor_maxmatch", int)
+  sensor_contact_direction: array("nworld", "nsensorcontact", "contact_sensor_maxmatch", float)
+  sensor_contact_criteria: array("nworld", "nsensorcontact", "contact_sensor_maxmatch", float)
+  fresh_sensordata: array("nworld", "nsensordata", float)
+  rne_ne_connect: array("nworld", int)
+  rne_ne_weld: array("nworld", int)
+
+  # islands
+  island_tree_tree: array("nworld", "ntree", "ntree", int)
+  island_stack: array("nworld", "ntree_sq", int)
+  island_efc_tree: array("nworld", "njmax", int)
+  island_unconstrained_count: array("nworld", 1, int)
+  island_ne_mapped: array("nworld", "ntree", int)
+  island_nf_mapped: array("nworld", "ntree", int)
+  island_nother_mapped: array("nworld", "ntree", int)
+  island_can_sleep: array("nworld", "ntree", int)
+  empty_bool: array("scratch_zero", bool)
+
+
+@dataclasses.dataclass
 class Data:
   """Dynamic state that updates each step.
 
@@ -2223,6 +2399,7 @@ class Data:
     overflow: overflow bitmask (OverflowType)                   (nworld,)
     face_xpos: cartesian flex face positions                    (nworld, nflexface, 9, 3)
     face_quat: cartesian flex face orientations                 (nworld, nflexface, 4)
+    _scratch: forward-dynamics workspace
   """
 
   solver_niter: array("nworld", int)
@@ -2370,6 +2547,7 @@ class Data:
   overflow: array("nworld", int)
   face_xpos: array("nworld", "nflexface", 9, wp.vec3)
   face_quat: array("nworld", "nflexface", wp.quat)
+  _scratch: _DataScratch
 
 
 @dataclasses.dataclass

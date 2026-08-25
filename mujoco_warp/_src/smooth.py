@@ -1757,9 +1757,10 @@ def rne_postconstraint(m: Model, d: Data):
 
   # Equality constraint forces - only if model has equality constraints
   if m.neq > 0:
-    # Allocate inline counters and count from efc data
-    ne_connect = wp.zeros((d.nworld,), dtype=int)
-    ne_weld = wp.zeros((d.nworld,), dtype=int)
+    ne_connect = d._scratch.rne_ne_connect
+    ne_weld = d._scratch.rne_ne_weld
+    ne_connect.zero_()
+    ne_weld.zero_()
 
     wp.launch(
       _count_equality_constraints,
@@ -2128,7 +2129,8 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
     qfrc: Force.
   """
   # time derivative of tendon Jacobian
-  ten_Jdot = wp.zeros((d.nworld, m.nJten), dtype=float)
+  ten_Jdot = d._scratch.ten_Jdot
+  ten_Jdot.zero_()
   wp.launch(
     _tendon_dot,
     dim=(d.nworld, m.ntendon),
@@ -2160,7 +2162,8 @@ def tendon_bias(m: Model, d: Data, qfrc: wp.array2d[float]):
   )
 
   # tendon bias force coefficients
-  ten_bias_coef = wp.zeros((d.nworld, m.ntendon), dtype=float)
+  ten_bias_coef = d._scratch.ten_bias_coef
+  ten_bias_coef.zero_()
   wp.launch(
     _tendon_bias_coef,
     dim=(d.nworld, m.ntendon, m.max_ten_J_rownnz),
@@ -2895,7 +2898,8 @@ def transmission(m: Model, d: Data):
   and tendon transmissions.
   """
   # TODO(team): investigate pre-computing moment_rownnz, moment_rowadr, moment_colind
-  moment_nnz = wp.zeros((d.nworld,), dtype=int)
+  moment_nnz = d._scratch.moment_nnz
+  moment_nnz.zero_()
 
   wp.launch(
     _transmission,
@@ -2937,7 +2941,8 @@ def transmission(m: Model, d: Data):
 
   if m.nacttrnbody:
     # compute moments
-    ncon = wp.zeros((d.nworld, m.nacttrnbody), dtype=int)
+    ncon = d._scratch.transmission_ncon
+    ncon.zero_()
 
     wp.launch(
       _transmission_body_moment,
@@ -3617,7 +3622,7 @@ def subtree_vel(m: Model, d: Data):
   Computes the linear momentum and angular momentum for each subtree, accumulating
   contributions up the kinematic tree.
   """
-  subtree_bodyvel = wp.empty((d.nworld, m.nbody), dtype=wp.spatial_vector)
+  subtree_bodyvel = d._scratch.subtree_bodyvel
 
   # bodywise quantities
   wp.launch(
@@ -4207,7 +4212,7 @@ def tendon(m: Model, d: Data):
   d.ten_J.zero_()
 
   # Cartesian 3D points fro geom wrap points
-  wrap_geom_xpos = wp.empty((d.nworld, m.nwrap), dtype=wp.spatial_vector)
+  wrap_geom_xpos = d._scratch.wrap_geom_xpos
 
   # process joint tendons
   wp.launch(

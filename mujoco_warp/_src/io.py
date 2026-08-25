@@ -150,6 +150,42 @@ def _get_nflexface(mjm: mujoco.MjModel) -> int:
   return nflexface
 
 
+def _get_nsensorcollision(mjm: mujoco.MjModel) -> int:
+  collision_types = (mujoco.mjtSensor.mjSENS_GEOMDIST, mujoco.mjtSensor.mjSENS_GEOMNORMAL, mujoco.mjtSensor.mjSENS_GEOMFROMTO)
+  geom_pairs = set()
+  for sensorid in np.nonzero(np.isin(mjm.sensor_type, collision_types))[0]:
+    objid = mjm.sensor_objid[sensorid]
+    refid = mjm.sensor_refid[sensorid]
+    if mjm.sensor_objtype[sensorid] == mujoco.mjtObj.mjOBJ_BODY:
+      obj_geoms = range(mjm.body_geomadr[objid], mjm.body_geomadr[objid] + mjm.body_geomnum[objid])
+    else:
+      obj_geoms = (objid,)
+    if mjm.sensor_reftype[sensorid] == mujoco.mjtObj.mjOBJ_BODY:
+      ref_geoms = range(mjm.body_geomadr[refid], mjm.body_geomadr[refid] + mjm.body_geomnum[refid])
+    else:
+      ref_geoms = (refid,)
+    geom_pairs.update(tuple(sorted((geom1, geom2))) for geom1 in obj_geoms for geom2 in ref_geoms)
+  return len(geom_pairs)
+
+
+def _sensor_scratch_sizes(mjm: mujoco.MjModel) -> dict[str, int]:
+  tactile_sensor_ids = np.nonzero(mjm.sensor_type == mujoco.mjtSensor.mjSENS_TACTILE)[0]
+  nsensortaxel = int(mjm.mesh_vertnum[mjm.sensor_objid[tactile_sensor_ids]].sum())
+  contact_sensor_maxmatch_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "contact_sensor_maxmatch")
+  if contact_sensor_maxmatch_id >= 0:
+    contact_sensor_maxmatch = int(mjm.numeric_data[mjm.numeric_adr[contact_sensor_maxmatch_id]])
+  else:
+    contact_sensor_maxmatch = 64
+
+  return {
+    "nrangefinder": int(np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_RANGEFINDER)),
+    "nsensorcollision": _get_nsensorcollision(mjm),
+    "tactile_nbody": mjm.nbody if nsensortaxel else 0,
+    "nsensorcontact": int(np.sum(mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT)),
+    "contact_sensor_maxmatch": contact_sensor_maxmatch,
+  }
+
+
 def is_sparse(mjm: mujoco.MjModel) -> bool:
   if mjm.opt.jacobian == mujoco.mjtJacobian.mjJAC_AUTO:
     if mjm.nv > 32:
@@ -1589,6 +1625,87 @@ def _initial_body_awake(mjm: mujoco.MjModel, nworld: int, init_asleep: bool) -> 
   return body_awake_np
 
 
+def _create_data_scratch(mjm: mujoco.MjModel, sizes: dict[str, int], compact_alloc: bool) -> types._DataScratch:
+  """Allocate forward-dynamics workspace arrays."""
+  scratch_sizes = dict(sizes)
+  nworld = sizes["nworld"]
+  nv = mjm.nv
+  nv_pad = sizes["nv_pad"]
+  njmax = sizes["njmax"]
+  solver_cg = mjm.opt.solver == mujoco.mjtSolver.mjSOL_CG
+  solver_newton = mjm.opt.solver == mujoco.mjtSolver.mjSOL_NEWTON
+  solver_incremental = solver_newton and mjm.opt.cone != mujoco.mjtCone.mjCONE_ELLIPTIC
+
+  compact_nv = sizes["nvmax_pad"] if compact_alloc else 0
+  compact_nworld = nworld if compact_alloc else 0
+
+  has_flex_collision = mjm.nflex > 0 and mjm.nflexelem > 0
+  has_flex_fps = has_flex_collision and bool(
+    mjm.nflex > 1 or np.any((mjm.flex_selfcollide != 0) & ((mjm.flex_contype & mjm.flex_conaffinity) != 0))
+  )
+  has_flex_epa = has_flex_collision and bool(
+    mjm.nmesh > 0 or np.any(mjm.geom_type == mujoco.mjtGeom.mjGEOM_ELLIPSOID) or has_flex_fps or np.any(mjm.flex_dim == 3)
+  )
+  flex_needs_nccd = has_flex_collision and bool(
+    mjm.nmesh > 0 or np.any(mjm.geom_type == mujoco.mjtGeom.mjGEOM_ELLIPSOID) or np.any(mjm.flex_dim == 3)
+  )
+
+  convex_epa_iterations = max(16, mjm.opt.ccd_iterations)
+  npolygonmax = max(4, int(mjm.npolygonmax))
+  nmeshdegmax = max(3, int(mjm.nmeshdegmax))
+
+  scratch_sizes.update(
+    solver_cg_nv_pad=nv_pad if solver_cg else 0,
+    solver_cg_nv=nv if solver_cg else 0,
+    solver_cg_nworld=nworld if solver_cg else 0,
+    solver_h_nv_pad=nv_pad if solver_newton else 0,
+    solver_hfactor_nv_pad=nv_pad if solver_newton and nv > 32 else 0,
+    solver_incremental_njmax=njmax if solver_incremental else 0,
+    solver_incremental_nworld=nworld if solver_incremental else 0,
+    compact_nworld=compact_nworld,
+    compact_nv=compact_nv,
+    compact_nv_pad=compact_nv,
+    compact_njmax=njmax if compact_alloc else 0,
+    compact_solver_cg_nv_pad=compact_nv if compact_alloc and solver_cg else 0,
+    compact_solver_cg_nv=compact_nv if compact_alloc and solver_cg else 0,
+    compact_solver_cg_nworld=compact_nworld if solver_cg else 0,
+    compact_solver_h_nv=compact_nv if compact_alloc and solver_newton else 0,
+    compact_solver_hfactor_nv=compact_nv if compact_alloc and solver_newton and compact_nv > 32 else 0,
+    compact_solver_incremental_njmax=njmax if compact_alloc and solver_incremental else 0,
+    compact_solver_incremental_nworld=compact_nworld if solver_incremental else 0,
+    ngeom_pair_type=len(types.GeomType) * (len(types.GeomType) + 1) // 2,
+    convex_epa_vert_size=10 + 2 * convex_epa_iterations,
+    convex_epa_face_size=6 + types.MJ_MAX_EPAFACES * convex_epa_iterations,
+    epa_horizon_size=types.MJ_MAX_EPAHORIZON,
+    multiccd_polygon_size=2 * npolygonmax,
+    multiccd_npolygonmax=npolygonmax,
+    multiccd_nmeshdegmax=nmeshdegmax,
+    flex_naconmax=sizes["naconmax"] if has_flex_collision else 0,
+    flex_scalar_size=1 if has_flex_collision else 0,
+    flex_fps_naconmax=sizes["naconmax"] if has_flex_fps else 0,
+    flex_world_stride=mjm.ngeom * mjm.nflex + mjm.nflex * mjm.nflex if has_flex_fps else 0,
+    flex_fps_scalar_size=1 if has_flex_fps else 0,
+    flex_nccd_size=1 if flex_needs_nccd else 0,
+    flex_epa_capacity=(sizes["naccdmax"] if has_flex_epa else 1) if has_flex_collision else 0,
+    flex_epa_vert_size=10 + 2 * mjm.opt.ccd_iterations,
+    flex_epa_face_size=6 + types.MJ_MAX_EPAFACES * mjm.opt.ccd_iterations,
+    flex_sap_nelem=mjm.nflexelem if has_flex_fps else 0,
+    sleep_nbody=mjm.nbody if compact_alloc else 0,
+    nacttrnbody=int(np.sum(mjm.actuator_trntype == mujoco.mjtTrn.mjTRN_BODY)),
+    fluid_nbody=mjm.nbody if bool(mjm.opt.wind.any() or mjm.opt.density > 0 or mjm.opt.viscosity > 0) else 0,
+    flex_nbody=mjm.nbody if mjm.nflex > 0 else 0,
+    nflexintcell=_get_nflexintcell(mjm),
+    subtree_nbody=mjm.nbody,
+    delayed_nu=mjm.nu if mjm.nhistory > 0 else 0,
+    ntree_sq=mjm.ntree * mjm.ntree,
+    scratch_zero=0,
+  )
+  scratch_sizes.update(_sensor_scratch_sizes(mjm))
+
+  kwargs = {f.name: _create_array(None, f.type, scratch_sizes) for f in dataclasses.fields(types._DataScratch)}
+  return types._DataScratch(**kwargs)
+
+
 def make_data(
   mjm: mujoco.MjModel,
   nworld: int = 1,
@@ -1681,6 +1798,7 @@ def make_data(
   )
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
+  sizes["naccdmax"] = naccdmax
   sizes["njmax"] = njmax
   sizes["nvmax"] = nvmax
   sizes["nvmax_pad"] = _nvmax_pad(nvmax)
@@ -1745,6 +1863,7 @@ def make_data(
     "nvmax_pad": sizes["nvmax_pad"],
     "njmax_pad": sizes["njmax_pad"],
     "njmax_nnz": njmax_nnz,
+    "_scratch": _create_data_scratch(mjm, sizes, compact_alloc),
     # world body
     "xquat": wp.array(np.tile(mjd.xquat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.quat),
     "xmat": wp.array(np.tile(mjd.xmat, (nworld, 1)), shape=(nworld, mjm.nbody), dtype=wp.mat33),
@@ -1905,6 +2024,7 @@ def put_data(
   )
   sizes["nworld"] = nworld
   sizes["naconmax"] = naconmax
+  sizes["naccdmax"] = naccdmax
   sizes["njmax"] = njmax
   sizes["nvmax"] = nvmax
   sizes["nvmax_pad"] = _nvmax_pad(nvmax)
@@ -2023,6 +2143,7 @@ def put_data(
     "nvmax_pad": sizes["nvmax_pad"],
     "njmax_pad": sizes["njmax_pad"],
     "njmax_nnz": njmax_nnz,
+    "_scratch": _create_data_scratch(mjm, sizes, compact_alloc),
     # fields set after initialization:
     "solver_niter": None,
     "qLD": None,
