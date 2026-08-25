@@ -352,6 +352,55 @@ class ForwardTest(parameterized.TestCase):
 
     self.assertTrue(d.time.numpy()[0] > 0.0)
 
+  @parameterized.parameters(
+    (mujoco.mjtSolver.mjSOL_CG, mujoco.mjtCone.mjCONE_PYRAMIDAL),
+    (mujoco.mjtSolver.mjSOL_NEWTON, mujoco.mjtCone.mjCONE_PYRAMIDAL),
+    (mujoco.mjtSolver.mjSOL_NEWTON, mujoco.mjtCone.mjCONE_ELLIPTIC),
+  )
+  def test_forward_scratch_reuse(self, solver, cone):
+    _, _, m, d = test_data.fixture(
+      "constraints.xml",
+      qpos_noise=0.01,
+      qvel_noise=0.01,
+      overrides={"opt.solver": solver, "opt.cone": cone},
+    )
+
+    mjw.forward(m, d)
+    wp.synchronize()
+    expected = {
+      "qacc": d.qacc.numpy(),
+      "qfrc_constraint": d.qfrc_constraint.numpy(),
+      "efc_force": d.efc.force.numpy(),
+      "sensordata": d.sensordata.numpy(),
+    }
+
+    reports = []
+    with wp.ScopedMemoryTracker("forward", report_func=reports.append):
+      mjw.forward(m, d)
+      wp.synchronize()
+
+    np.testing.assert_array_equal(d.qacc.numpy(), expected["qacc"])
+    np.testing.assert_array_equal(d.qfrc_constraint.numpy(), expected["qfrc_constraint"])
+    np.testing.assert_array_equal(d.efc.force.numpy(), expected["efc_force"])
+    np.testing.assert_array_equal(d.sensordata.numpy(), expected["sensordata"])
+    self.assertLen(reports, 1)
+    allocations = reports[0].split("Total allocations:\n", 1)[1].split("  Peak usage:", 1)[0]
+    self.assertEmpty(allocations.strip())
+
+  @absltest.skipIf(not wp.get_device().is_cuda, "Skipping test that requires GPU.")
+  def test_forward_conditional_graph_capture(self):
+    if not wp.is_conditional_graph_supported():
+      self.skipTest("CUDA graph conditional nodes are not supported.")
+
+    _, _, m, d = test_data.fixture("humanoid/humanoid.xml")
+    condition = wp.ones(1, dtype=int)
+
+    mjw.forward(m, d)
+    with wp.ScopedCapture() as capture:
+      wp.capture_if(condition, on_true=mjw.forward, m=m, d=d)
+
+    wp.capture_launch(capture.graph)
+
   def test_forward_energy(self):
     _, mjd, _, d = test_data.fixture(
       "humanoid/humanoid.xml", qvel_noise=0.01, ctrl_noise=0.1, overrides={"opt.enableflags": EnableBit.ENERGY}

@@ -813,12 +813,12 @@ def sensor_pos(m: Model, d: Data):
     return
 
   # rangefinder
-  rangefinder_dist = wp.empty((d.nworld, m.nrangefinder), dtype=float)
+  rangefinder_dist = d._scratch.rangefinder_dist
   if m.sensor_rangefinder_adr.size > 0:
-    rangefinder_pnt = wp.empty((d.nworld, m.nrangefinder), dtype=wp.vec3)
-    rangefinder_vec = wp.empty((d.nworld, m.nrangefinder), dtype=wp.vec3)
-    rangefinder_geomid = wp.empty((d.nworld, m.nrangefinder), dtype=int)
-    rangefinder_normal = wp.empty((d.nworld, m.nrangefinder), dtype=wp.vec3)
+    rangefinder_pnt = d._scratch.rangefinder_pnt
+    rangefinder_vec = d._scratch.rangefinder_vec
+    rangefinder_geomid = d._scratch.rangefinder_geomid
+    rangefinder_normal = d._scratch.rangefinder_normal
 
     # get position and direction
     wp.launch(
@@ -849,7 +849,8 @@ def sensor_pos(m: Model, d: Data):
     energy_vel(m, d)
 
   # collision sensors (distance, normal, fromto)
-  sensor_collision = wp.full((d.nworld, m.nsensorcollision, 8, 7), 1.0e32, dtype=float)
+  sensor_collision = d._scratch.sensor_collision
+  sensor_collision.fill_(1.0e32)
   if m.nsensorcollision:
     wp.launch(
       _sensor_collision,
@@ -2542,71 +2543,63 @@ def sensor_acc(m: Model, d: Data):
     ],
   )
 
-  weld_geom_count = wp.zeros((d.nworld, m.nbody), dtype=int)
-  weld_geom_list = wp.full((d.nworld, m.nbody, MJ_MAXCONPAIR), -1, dtype=int)
-  wp.launch(
-    _preprocess_tactile_contacts,
-    dim=d.naconmax,
-    inputs=[
-      m.body_weldid,
-      m.geom_bodyid,
-      d.contact.geom,
-      d.contact.worldid,
-      d.nacon,
-    ],
-    outputs=[
-      weld_geom_count,
-      weld_geom_list,
-    ],
-  )
+  if m.nsensortaxel:
+    weld_geom_count = d._scratch.weld_geom_count
+    weld_geom_list = d._scratch.weld_geom_list
+    weld_geom_count.zero_()
+    weld_geom_list.fill_(-1)
+    wp.launch(
+      _preprocess_tactile_contacts,
+      dim=d.naconmax,
+      inputs=[m.body_weldid, m.geom_bodyid, d.contact.geom, d.contact.worldid, d.nacon],
+      outputs=[weld_geom_count, weld_geom_list],
+    )
 
-  wp.launch(
-    _sensor_tactile,
-    dim=(d.nworld, m.nsensortaxel),
-    inputs=[
-      m.body_rootid,
-      m.body_weldid,
-      m.oct_child,
-      m.oct_aabb,
-      m.oct_coeff,
-      m.geom_type,
-      m.geom_bodyid,
-      m.geom_dataid,
-      m.geom_size,
-      m.mesh_vertadr,
-      m.mesh_vertnum,
-      m.mesh_octadr,
-      m.mesh_normaladr,
-      m.mesh_normalnum,
-      m.mesh_vert,
-      m.mesh_normal,
-      m.mesh_quat,
-      m.sensor_objid,
-      m.sensor_refid,
-      m.sensor_dim,
-      m.sensor_adr,
-      m.plugin,
-      m.plugin_attr,
-      m.geom_plugin_index,
-      m.taxel_vertadr,
-      m.taxel_sensorid,
-      d.geom_xpos,
-      d.geom_xmat,
-      d.subtree_com,
-      d.cvel,
-      weld_geom_count,
-      weld_geom_list,
-    ],
-    outputs=[
-      d.sensordata,
-    ],
-  )
+    wp.launch(
+      _sensor_tactile,
+      dim=(d.nworld, m.nsensortaxel),
+      inputs=[
+        m.body_rootid,
+        m.body_weldid,
+        m.oct_child,
+        m.oct_aabb,
+        m.oct_coeff,
+        m.geom_type,
+        m.geom_bodyid,
+        m.geom_dataid,
+        m.geom_size,
+        m.mesh_vertadr,
+        m.mesh_vertnum,
+        m.mesh_octadr,
+        m.mesh_normaladr,
+        m.mesh_normalnum,
+        m.mesh_vert,
+        m.mesh_normal,
+        m.mesh_quat,
+        m.sensor_objid,
+        m.sensor_refid,
+        m.sensor_dim,
+        m.sensor_adr,
+        m.plugin,
+        m.plugin_attr,
+        m.geom_plugin_index,
+        m.taxel_vertadr,
+        m.taxel_sensorid,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.subtree_com,
+        d.cvel,
+        weld_geom_count,
+        weld_geom_list,
+      ],
+      outputs=[d.sensordata],
+    )
 
-  sensor_contact_nmatch = wp.empty((d.nworld, m.nsensorcontact), dtype=int)
-  sensor_contact_matchid = wp.empty((d.nworld, m.nsensorcontact, m.opt.contact_sensor_maxmatch), dtype=int)
-  sensor_contact_direction = wp.empty((d.nworld, m.nsensorcontact, m.opt.contact_sensor_maxmatch), dtype=float)
+  sensor_contact_nmatch = d._scratch.sensor_contact_nmatch
+  sensor_contact_matchid = d._scratch.sensor_contact_matchid
+  sensor_contact_direction = d._scratch.sensor_contact_direction
   if m.nsensorcontact:
-    sensor_contact_criteria = wp.empty((d.nworld, m.nsensorcontact, m.opt.contact_sensor_maxmatch), dtype=float)
+    sensor_contact_criteria = d._scratch.sensor_contact_criteria
     # TODO(team): fill_ operations in one kernel?
     sensor_contact_nmatch.fill_(0)
     sensor_contact_matchid.fill_(-1)
@@ -3006,7 +2999,8 @@ def energy_vel(m: Model, d: Data):
   # kinetic energy: 0.5 * qvel.T @ M @ qvel
 
   # M @ qvel
-  mv = wp.zeros((d.nworld, m.nv), dtype=float)
+  mv = d._scratch.energy_mv
+  mv.zero_()
   support.mul_m(m, d, mv, d.qvel)
 
   wp.launch_tiled(

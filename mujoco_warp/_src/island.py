@@ -269,7 +269,7 @@ def _flood_fill(
 @event_scope
 def flood_fill(m: types.Model, d: types.Data, tree_tree: wp.array3d[int]):
   d.tree_island.fill_(-1)
-  stack_scratch = wp.empty((d.nworld, m.ntree * m.ntree), dtype=int)
+  stack_scratch = d._scratch.island_stack
 
   wp.launch(
     _flood_fill,
@@ -302,7 +302,8 @@ def island(m: types.Model, d: types.Data):
     return
 
   # Step 1: Find tree edges
-  tree_tree = wp.zeros((d.nworld, m.ntree, m.ntree), dtype=int)
+  tree_tree = d._scratch.island_tree_tree
+  tree_tree.zero_()
   tree_edges(m, d, tree_tree)
 
   # Step 2: DFS flood fill
@@ -857,7 +858,7 @@ def compute_island_mapping(m: types.Model, d: types.Data):
     inputs=[],
     outputs=[d.dof_island, d.map_dof2idof, d.map_idof2dof, d.dof_islandid],
   )
-  efc_tree = wp.empty((d.nworld, d.njmax), dtype=int)
+  efc_tree = d._scratch.island_efc_tree
   wp.launch(
     _init_efc_arrays,
     dim=(d.nworld, d.njmax),
@@ -918,7 +919,8 @@ def compute_island_mapping(m: types.Model, d: types.Data):
   )
 
   # 4. Map DOFs
-  unconstrained_cnt = wp.zeros((d.nworld, 1), dtype=int)
+  unconstrained_cnt = d._scratch.island_unconstrained_count
+  unconstrained_cnt.zero_()
   d.island_dofadr.fill_(m.nv)
   wp.launch(
     _island_map_dofs,
@@ -928,9 +930,12 @@ def compute_island_mapping(m: types.Model, d: types.Data):
   )
 
   # 5. Map Constraints
-  ne_mapped = wp.zeros((d.nworld, m.ntree), dtype=int)
-  nf_mapped = wp.zeros((d.nworld, m.ntree), dtype=int)
-  nother_mapped = wp.zeros((d.nworld, m.ntree), dtype=int)
+  ne_mapped = d._scratch.island_ne_mapped
+  nf_mapped = d._scratch.island_nf_mapped
+  nother_mapped = d._scratch.island_nother_mapped
+  ne_mapped.zero_()
+  nf_mapped.zero_()
+  nother_mapped.zero_()
 
   wp.launch(
     _island_map_constraints,
