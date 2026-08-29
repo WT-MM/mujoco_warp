@@ -38,6 +38,122 @@ def _assert_eq(a, b, name):
 
 
 class DerivativeTest(parameterized.TestCase):
+  @parameterized.parameters("implicit", "implicitfast")
+  def test_batched_geom_fluid(self, integrator):
+    """Tests per-world fluid coefficients, including box/ellipsoid routing."""
+    mjm = mujoco.MjModel.from_xml_string(f"""
+      <mujoco>
+        <option integrator="{integrator}" density="1000" viscosity="0.002" wind="0.1 0.2 -0.05"/>
+        <worldbody>
+          <body>
+            <joint type="hinge" axis="0 1 0"/>
+            <geom type="ellipsoid" size="0.3 0.45 0.6" pos="0.1 0.02 -0.04" mass="0.01"
+                  euler="10 20 30" fluidshape="ellipsoid" fluidcoef="1 1.5 2 0.5 0.8"/>
+          </body>
+          <body pos="2 0 0">
+            <joint type="hinge" axis="1 0 0"/>
+            <geom type="box" size="0.3 0.3 0.3" mass="0.01"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qpos="0.3 -0.2" qvel="7 -4"/>
+        </keyframe>
+      </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjw.put_model(mjm, batch_sizes={"geom_fluid": 3})
+    d = mjw.put_data(mjm, mjd, nworld=3)
+
+    # world 1 swaps routing: the ellipsoid geom falls back to the inertia box model, while the
+    # box geom switches to the ellipsoid model; world 2 keeps world 0's routing but doubles the
+    # drag, lift and added-mass coefficients, which is the domain-randomization case
+    geom_fluid = m.geom_fluid.numpy()
+    geom_fluid[1, 0] = 0.0
+    geom_fluid[1, 1] = mjm.geom_fluid[0]
+    geom_fluid[2, 0, 1:] *= 2.0
+    m.geom_fluid.assign(geom_fluid)
+
+    out = wp.zeros((3, m.nC), dtype=float)
+    mjw.deriv_smooth_vel(m, d, out)
+
+    # every world must differ, otherwise a world is silently reading world 0's coefficients
+    self.assertFalse(np.allclose(out.numpy()[0], out.numpy()[1]))
+    self.assertFalse(np.allclose(out.numpy()[0], out.numpy()[2]))
+
+    # each world is checked against MuJoCo carrying that world's coefficients. MuJoCo is the
+    # reference rather than an unbatched mjwarp model, so routing cached from the host model
+    # and any scaling mjd_ellipsoidFluid does not apply both show up here.
+    for worldid in range(3):
+      mjm.geom_fluid[:] = geom_fluid[worldid]
+      mjd_world = mujoco.MjData(mjm)
+      mujoco.mj_resetDataKeyframe(mjm, mjd_world, 0)
+      mujoco.mj_forward(mjm, mjd_world)
+      mujoco.mj_step(mjm, mjd_world)
+
+      mjw_out = np.zeros((m.nv, m.nv))
+      mujoco.mju_sym2dense(mjw_out, out.numpy()[worldid].astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+
+      mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+      mujoco.mju_sparse2dense(mj_qDeriv, mjd_world.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+      mj_M = np.zeros((m.nv, m.nv))
+      mujoco.mju_sym2dense(mj_M, mjd_world.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+
+      _assert_eq(mjw_out, mj_M - mjm.opt.timestep * mj_qDeriv, f"M - dt * qDeriv (world {worldid})")
+
+  def test_smooth_vel_fluid_inertial_only_body(self):
+    """Tests the inertia-box fluid derivative for a body with mass but no geoms.
+
+    body_fluid_adr admits such a body through its mass, not through a geom, so this covers
+    the leg of that candidate list which no geom-carrying model reaches.
+    """
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <option integrator="implicitfast" density="1.2" viscosity="0.1"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <inertial pos="0 0 0" mass="1" diaginertia=".1 .2 .3"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 4 5 6"/>
+        </keyframe>
+      </mujoco>
+    """)
+    self.assertEqual(mjm.body_geomnum[1], 0)
+
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd)
+    np.testing.assert_array_equal(m.body_fluid_adr.numpy(), [1])
+
+    out = wp.zeros(d.M.shape, dtype=float)
+    mjw.deriv_smooth_vel(m, d, out)
+
+    mujoco.mj_step(mjm, mjd)
+
+    mjw_out = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(mjw_out, out.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_M = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+
+    mask = m.M_elemid.numpy() >= 0
+    mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
+    # a fluid derivative is actually present, so the comparison has something to catch
+    self.assertFalse(np.allclose(mjw_out[mask], mj_M[mask]))
+    _assert_eq(mjw_out[mask], mj_out[mask], "M - dt * qDeriv")
+
   def test_smooth_vel_fluid_massless_body(self):
     """Tests that a massless fluid body contributes no qDeriv, like mj_fluid."""
     mjm, mjd, m, d = test_data.fixture(
