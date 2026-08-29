@@ -2342,12 +2342,29 @@ def get_data_into(
     result.map_iefc2efc[:nefc] = d.map_iefc2efc.numpy()[world_id, :nefc]
 
 
+def _reset_all_mask(device) -> wp.array:
+  """Zero-length bool array meaning "reset every world".
+
+  The reset kernels test ``reset_in.shape[0] > 0`` before indexing
+  ``reset_in``, so a zero-length array selects every world without issuing a
+  per-thread mask load. A zero-length wp.array owns no device memory, so this
+  allocates nothing and is safe to build during CUDA graph capture; the null
+  pointer baked into the captured launch params is never dereferenced because
+  the shape test is a launch-parameter compare, uniform across the warp.
+
+  Not cached: there is nothing to cache, and a cache would go stale across
+  wp.init().
+  """
+  return wp.empty(0, dtype=bool, device=device)
+
+
 @wp.kernel(enable_backward=False, grid_stride=False)
 def _reset_xfrc_applied(reset_in: wp.array[bool], xfrc_applied_out: wp.array2d[wp.spatial_vector]):
   worldid, bodyid, elemid = wp.tid()
 
-  if not reset_in[worldid]:
-    return
+  if reset_in.shape[0] > 0:
+    if not reset_in[worldid]:
+      return
 
   xfrc_applied_out[worldid, bodyid][elemid] = 0.0
 
@@ -2356,8 +2373,9 @@ def _reset_xfrc_applied(reset_in: wp.array[bool], xfrc_applied_out: wp.array2d[w
 def _reset_M(reset_in: wp.array[bool], M_out: wp.array2d[float]):
   worldid, elemid = wp.tid()
 
-  if not reset_in[worldid]:
-    return
+  if reset_in.shape[0] > 0:
+    if not reset_in[worldid]:
+      return
 
   M_out[worldid, elemid] = 0.0
 
@@ -2405,8 +2423,9 @@ def _reset_nworld(
 ):
   worldid = wp.tid()
 
-  if not reset_in[worldid]:
-    return
+  if reset_in.shape[0] > 0:
+    if not reset_in[worldid]:
+      return
 
   solver_niter_out[worldid] = 0
   if worldid == 0:
@@ -2456,8 +2475,9 @@ def _reset_mocap(
 ):
   worldid, bodyid = wp.tid()
 
-  if not reset_in[worldid]:
-    return
+  if reset_in.shape[0] > 0:
+    if not reset_in[worldid]:
+      return
 
   mocapid = body_mocapid[bodyid]
 
@@ -2499,8 +2519,10 @@ def _reset_contact(
     return
 
   worldid = contact_worldid_out[conid]
-  if worldid >= 0 and not reset_in[worldid]:
-    return
+  if reset_in.shape[0] > 0:
+    if worldid >= 0:
+      if not reset_in[worldid]:
+        return
 
   contact_dist_out[conid] = 0.0
   contact_pos_out[conid] = wp.vec3(0.0)
@@ -2546,8 +2568,9 @@ def _reset_sleep(
 ):
   worldid, elemid = wp.tid()
 
-  if not reset_in[worldid]:
-    return
+  if reset_in.shape[0] > 0:
+    if not reset_in[worldid]:
+      return
 
   if elemid < ntree:
     tree_asleep_out[worldid, elemid] = -(1 + mj_minawake)
@@ -2582,7 +2605,9 @@ def reset_data(m: types.Model, d: types.Data, reset: Optional[wp.array] = None):
   sleep_enabled = bool(m.opt.enableflags & types.EnableBit.SLEEP)
 
   if reset is None:
-    reset_input = wp.ones(d.nworld, dtype=bool)
+    # Zero-length mask = reset every world. The kernels' `reset_in.shape[0] > 0`
+    # guard is warp-uniform, so a full reset issues no per-thread mask load.
+    reset_input = _reset_all_mask(d.qpos.device)
   elif isinstance(reset, wp.array):
     if reset.shape != (d.nworld,):
       raise ValueError(f"reset array must have shape ({d.nworld},), got {reset.shape}.")
