@@ -837,6 +837,7 @@ def _qderiv_ellipsoid_fluid(
   body_rootid: wp.array[int],
   body_geomnum: wp.array[int],
   body_geomadr: wp.array[int],
+  body_mass: wp.array2d[float],
   dof_bodyid: wp.array[int],
   geom_type: wp.array[int],
   geom_size: wp.array2d[wp.vec3],
@@ -890,6 +891,10 @@ def _qderiv_ellipsoid_fluid(
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
 
   if density <= 0.0 and viscosity <= 0.0:
+    return
+
+  # mj_fluid and mjd_passive_vel skip negligible-mass bodies, and so does _fluid_force
+  if body_mass[worldid % body_mass.shape[0], bodyid] < MJ_MINVAL:
     return
 
   cdof_i = cdof_in[worldid, dofiid]
@@ -1071,6 +1076,12 @@ def _qderiv_box_fluid(
   if density <= 0.0 and viscosity <= 0.0:
     return
 
+  # mj_fluid and mjd_passive_vel skip negligible-mass bodies, and so does _fluid_force.
+  # body_mass is batched, so this must be per-world: the host-side body_fluid_box_adr
+  # filter cannot see a mass reassigned after put_model.
+  if body_mass[worldid % body_mass.shape[0], bodyid] < MJ_MINVAL:
+    return
+
   # Body velocity and kinematics
   b_ipos = xipos_in[worldid, bodyid]
   b_imat = ximat_in[worldid, bodyid]
@@ -1225,6 +1236,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
           m.body_rootid,
           m.body_geomnum,
           m.body_geomadr,
+          m.body_mass,
           m.dof_bodyid,
           m.geom_type,
           m.geom_size,
