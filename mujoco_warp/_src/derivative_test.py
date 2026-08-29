@@ -38,6 +38,146 @@ def _assert_eq(a, b, name):
 
 
 class DerivativeTest(parameterized.TestCase):
+  def test_smooth_vel_fluid_massless_body(self):
+    """Tests that a massless fluid body contributes no qDeriv, like mj_fluid."""
+    mjm, mjd, m, d = test_data.fixture(
+      xml="""
+      <mujoco>
+        <option integrator="implicitfast" density="1.2" viscosity="0.1"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="ellipsoid" size=".1 .2 .3" mass="0" fluidshape="ellipsoid"/>
+            <body pos=".2 0 0">
+              <geom type="sphere" size=".1" mass="1"/>
+            </body>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 4 5 6"/>
+        </keyframe>
+      </mujoco>
+      """,
+      keyframe=0,
+    )
+    mujoco.mj_step(mjm, mjd)
+
+    out_smooth_vel = wp.zeros((1, m.nC), dtype=float)
+    mjw.deriv_smooth_vel(m, d, out_smooth_vel)
+
+    mjw_out = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(
+      mjw_out, out_smooth_vel.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind
+    )
+    mjw_out = np.tril(mjw_out) + np.tril(mjw_out, -1).T
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_M = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+    mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
+
+    _assert_eq(mjw_out, mj_out, "M - dt * qDeriv")
+
+  def test_smooth_vel_fluid_massless_body_batched_mass(self):
+    """Tests that zeroing body_mass in one world removes that world's fluid qDeriv.
+
+    body_mass is a batched field, so the mass check must be per-world inside the
+    kernel: the inertia-box model divides by mass, and a host-side candidate-list
+    filter cannot see a mass assigned after put_model.
+    """
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <option integrator="implicitfast" density="1.2" viscosity="0.1"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="box" size=".1 .2 .3" mass="1"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 4 5 6"/>
+        </keyframe>
+      </mujoco>
+    """)
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+    mujoco.mj_step(mjm, mjd)
+
+    m = mjw.put_model(mjm, batch_sizes={"body_mass": 2})
+    d = mjw.put_data(mjm, mjd, nworld=2)
+
+    body_mass = m.body_mass.numpy()
+    body_mass[1, 1] = 0.0
+    m.body_mass.assign(body_mass)
+
+    out = wp.zeros((2, m.nC), dtype=float)
+    mjw.deriv_smooth_vel(m, d, out)
+
+    self.assertTrue(np.isfinite(out.numpy()).all(), "qDeriv must stay finite")
+    # world 1's body is massless, so it contributes no fluid derivative and
+    # M - dt * qDeriv collapses to M
+    _assert_eq(out.numpy()[1], d.M.numpy()[0], "M - dt * qDeriv (massless world)")
+    # world 0 is unaffected and still carries a fluid contribution
+    self.assertFalse(np.allclose(out.numpy()[0], d.M.numpy()[0]))
+
+  def test_smooth_vel_fluid_interaction_coef(self):
+    """Tests that the ellipsoid fluid derivative is not scaled by the interaction coefficient.
+
+    mj_ellipsoidFluidModel scales the force by geom_fluid[geomid, 0], but mjd_ellipsoidFluid
+    only uses that coefficient to skip the geom and never scales the derivative by it. The
+    asymmetry is invisible from XML, where the coefficient compiles to 0.0 or 1.0, so this
+    pins it against a value only reachable by assigning geom_fluid directly.
+    """
+    mjm = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <option integrator="implicitfast" density="1.2" viscosity="0.1"/>
+        <worldbody>
+          <body>
+            <freejoint/>
+            <geom type="ellipsoid" size=".1 .2 .3" mass="0.5" fluidshape="ellipsoid"
+                  fluidcoef="1 1.5 2 0.5 0.8"/>
+          </body>
+        </worldbody>
+        <keyframe>
+          <key qvel="1 2 3 4 5 6"/>
+        </keyframe>
+      </mujoco>
+    """)
+    mjm.geom_fluid[0, 0] = 0.5
+
+    mjd = mujoco.MjData(mjm)
+    mujoco.mj_resetDataKeyframe(mjm, mjd, 0)
+    mujoco.mj_forward(mjm, mjd)
+
+    m = mjw.put_model(mjm)
+    d = mjw.put_data(mjm, mjd)
+
+    # the force is scaled by the coefficient, in both MuJoCo and mjwarp
+    mjw.passive(m, d)
+    _assert_eq(d.qfrc_fluid.numpy()[0], mjd.qfrc_fluid, "qfrc_fluid")
+
+    out = wp.zeros(d.M.shape, dtype=float)
+    mjw.deriv_smooth_vel(m, d, out)
+
+    mujoco.mj_step(mjm, mjd)
+
+    mjw_out = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(mjw_out, out.numpy().reshape(-1).astype(np.float64), mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+
+    mj_qDeriv = np.zeros((mjm.nv, mjm.nv))
+    mujoco.mju_sparse2dense(mj_qDeriv, mjd.qDeriv, mjm.D_rownnz, mjm.D_rowadr, mjm.D_colind)
+
+    mj_M = np.zeros((m.nv, m.nv))
+    mujoco.mju_sym2dense(mj_M, mjd.M, mjm.M_rownnz, mjm.M_rowadr, mjm.M_colind)
+
+    # the derivative is not
+    mask = m.M_elemid.numpy() >= 0
+    mj_out = mj_M - mjm.opt.timestep * mj_qDeriv
+    _assert_eq(mjw_out[mask], mj_out[mask], "M - dt * qDeriv")
+
   @parameterized.parameters(mujoco.mjtJacobian.mjJAC_DENSE, mujoco.mjtJacobian.mjJAC_SPARSE)
   def test_smooth_vel(self, jacobian):
     """Tests qDeriv."""
